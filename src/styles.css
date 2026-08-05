@@ -1,0 +1,743 @@
+:root {
+  --paper: #f7f4ec;
+  --ink: #1a1816;
+  --sig: #8a3033;
+  --s2: #6b665e;
+  --ghost: #dcd7cb;
+
+  --serif: "Iowan Old Style", Palatino, Georgia, serif;
+  --mono: "SF Mono", Menlo, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  overflow: hidden;
+}
+
+#app { position: fixed; inset: 0; }
+
+#viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: default;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+#viewport.panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* faint dot ground — world-fixed, re-parameterised by the camera each frame */
+#grid {
+  position: absolute;
+  inset: 0;
+  /* explicit: an absolutely-positioned <svg> is a replaced element, so
+     width:auto would resolve to the 300x150 intrinsic size, not the inset */
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+#grid circle {
+  fill: var(--ghost);
+}
+
+#world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+#cards { position: absolute; top: 0; left: 0; }
+
+/* ---------------------------------------------------------------- edges --- */
+/* geometry is state: solid = walked, dashed = asserted, signal loop = returned */
+
+#edges {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.edge {
+  fill: none;
+  stroke: var(--ink);
+  /* --z is published by the camera: hairlines stay 1px *on screen* */
+  stroke-width: calc(1px / var(--z, 1));
+  stroke-linecap: round;
+}
+
+.edge-manual {
+  stroke-dasharray: calc(5px / var(--z, 1)) calc(4px / var(--z, 1));
+}
+
+.edge-return {
+  stroke: var(--sig);
+  stroke-width: calc(1.5px / var(--z, 1));
+}
+
+/* a note is held, not walked to: the faintest line on the cloth */
+.edge-tether {
+  stroke: var(--ghost);
+}
+
+.edge-pending {
+  stroke: var(--s2);
+  stroke-dasharray: calc(3px / var(--z, 1)) calc(4px / var(--z, 1));
+}
+
+.edge-arrow { fill: var(--ink); stroke: none; }
+
+.edge-atom {
+  fill: var(--sig);
+  stroke: none;
+  r: calc(2.5px / var(--z, 1));
+}
+
+/* the branch start: the same atom, unfilled, at the fork instead of the landing.
+   Filled = "I came back here"; open = "the line forked here". */
+.edge-fork {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: calc(1px / var(--z, 1));
+  r: calc(3px / var(--z, 1));
+}
+
+/* a 1px hairline is not a click target: an invisible fat stroke is the grab */
+.edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: calc(12px / var(--z, 1));
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+/* a selected thread is ONE object: its line thickens, the rest of the weave
+   recedes. Never a tint, never a glow. */
+.edge[data-thread="in"] {
+  stroke: var(--ink);
+  stroke-width: calc(1.5px / var(--z, 1));
+}
+
+.edge[data-thread="out"] { stroke: var(--ghost); }
+
+.edge-atom[data-thread="in"] { fill: var(--ink); }
+.edge-atom[data-thread="out"] { fill: var(--ghost); }
+
+.edge-fork[data-thread="in"] { stroke: var(--ink); }
+.edge-fork[data-thread="out"] { stroke: var(--ghost); }
+
+/* ---------------------------------------------------------------- cards --- */
+
+.card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-width: calc(1px / var(--z, 1));
+  overflow: hidden;
+  /* the card is a size container so the title-card tier can bound its type
+     against THIS card's width (cqw) instead of a flat number it cannot know */
+  container-type: inline-size;
+}
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem 0.4rem;
+  border-bottom: 1px solid var(--ink);
+  border-bottom-width: calc(1px / var(--z, 1));
+  cursor: grab;
+  user-select: none;
+  flex: none;
+}
+
+.card[data-dragging] .card-head { cursor: grabbing; }
+
+.card-head-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.card-title {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.15;
+}
+
+.card-kind {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--s2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card[data-status="error"] .card-kind { color: var(--sig); }
+
+.card-unpin {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 5px;
+  flex: none;
+  color: var(--s2);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.card-unpin:hover { color: var(--ink); border-color: var(--ink); }
+
+/* selection and ping are inversions, never glows */
+.card[data-selected] .card-head,
+.card[data-ping] .card-head,
+.card[data-thread="in"] .card-head {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.card[data-selected] .card-kind,
+.card[data-ping] .card-kind,
+.card[data-thread="in"] .card-kind,
+.card[data-selected] .card-unpin,
+.card[data-ping] .card-unpin,
+.card[data-thread="in"] .card-unpin { color: var(--ghost); }
+
+.card[data-selected] .card-unpin:hover,
+.card[data-ping] .card-unpin:hover,
+.card[data-thread="in"] .card-unpin:hover { color: var(--paper); border-color: var(--paper); }
+
+/* off-thread cards recede to the back of the cloth — still readable, not loud */
+.card[data-thread="out"] {
+  border-color: var(--ghost);
+  color: var(--s2);
+}
+
+.card[data-thread="out"] .card-head { border-bottom-color: var(--ghost); }
+.card[data-thread="out"] .card-title { color: var(--s2); }
+.card[data-thread="out"] .card-body,
+.card[data-thread="out"] .card-body a { color: var(--s2); }
+.card[data-thread="out"] .card-body a { border-bottom-color: var(--ghost); }
+.card[data-thread="out"] .card-body a:hover {
+  background: var(--s2);
+  color: var(--paper);
+}
+
+.card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 0.55rem 0.7rem 0.8rem;
+  font-family: var(--serif);
+  font-size: 13.5px;
+  line-height: 1.5;
+  /* wiki tables and long identifiers must not widen the card */
+  overflow-wrap: anywhere;
+}
+
+.card-placeholder {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--s2);
+}
+
+/* provider HTML — kept plain: prose is a reading surface */
+
+.card-body a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--ghost);
+  cursor: pointer;
+}
+
+.card-body a:hover {
+  background: var(--ink);
+  color: var(--paper);
+  border-bottom-color: var(--ink);
+}
+
+.card-body a[data-loom-link="external"],
+.card-body a[data-loom-link="missing"],
+.card-body a[data-loom-link="skip"] {
+  color: var(--s2);
+  border-bottom-style: dotted;
+}
+
+.card-body a[data-loom-link="external"]:hover,
+.card-body a[data-loom-link="missing"]:hover,
+.card-body a[data-loom-link="skip"]:hover {
+  background: transparent;
+  color: var(--s2);
+  border-bottom-color: var(--s2);
+}
+
+.card-body h1, .card-body h2 {
+  font-size: 15px;
+  font-weight: 400;
+  margin: 0.9em 0 0.3em;
+  padding-bottom: 0.12em;
+  border-bottom: 1px solid var(--ghost);
+}
+
+.card-body h3, .card-body h4, .card-body h5, .card-body h6 {
+  font-size: 13.5px;
+  font-weight: 400;
+  font-style: italic;
+  margin: 0.75em 0 0.2em;
+}
+
+.card-body p { margin: 0 0 0.6em; }
+.card-body ul, .card-body ol { margin: 0 0 0.6em 1.1em; }
+.card-body li { margin-bottom: 0.15em; }
+.card-body dl { margin: 0 0 0.6em; }
+.card-body dd { margin-left: 1.1em; }
+
+.card-body code, .card-body pre, .card-body kbd {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.card-body pre {
+  margin: 0 0 0.6em;
+  padding-left: 0.6em;
+  border-left: 1px solid var(--ghost);
+  overflow-x: auto;
+}
+
+.card-body blockquote {
+  margin: 0 0 0.6em;
+  padding-left: 0.6em;
+  border-left: 1px solid var(--ghost);
+  color: var(--s2);
+}
+
+.card-body hr {
+  border: 0;
+  border-top: 1px solid var(--ghost);
+  margin: 0.7em 0;
+}
+
+/* a wide table scrolls inside itself; it never widens the reading column */
+.card-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 0 0 0.6em;
+}
+.card-body th, .card-body td {
+  border: 1px solid var(--ghost);
+  padding: 2px 5px;
+  text-align: left;
+  font-weight: 400;
+}
+
+/* the fibers count — written only on the title card (see tiers) */
+.card-marks { display: none; }
+
+/* --------------------------------------------------------------- fibers --- */
+/* A mark is geometry, never a wash: a signal hairline under the words that
+   were kept. Highlights are solid, note anchors are dashed — the dash says
+   "there is a card on the other end of this". */
+
+.fiber-mark {
+  border-bottom: 1px solid var(--sig);
+}
+
+.fiber-mark[data-kind="note"] {
+  border-bottom-style: dashed;
+}
+
+.card[data-thread="out"] .fiber-mark { border-bottom-color: var(--s2); }
+
+/* a note is written, not fetched: mono body, editable, no chrome of its own */
+.card[data-kind="note"] .card-body {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  outline: none;
+  cursor: text;
+}
+
+.card[data-kind="note"] .card-body:empty::before {
+  content: "type the note";
+  color: var(--ghost);
+}
+
+.card[data-kind="note"] .card-title {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--s2);
+}
+
+.card[data-kind="note"][data-selected] .card-title,
+.card[data-kind="note"][data-thread="in"] .card-title { color: var(--paper); }
+
+/* the select-text pill — screen space, hairline, three verbs, no ceremony */
+.fiber-pill {
+  position: absolute;
+  display: flex;
+  align-items: stretch;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  user-select: none;
+  z-index: 6;
+}
+
+.fiber-pill[hidden] { display: none; }
+
+.fiber-pill button {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 2px 7px;
+  white-space: nowrap;
+  color: var(--ink);
+  background: var(--paper);
+  border: 0;
+  border-left: 1px solid var(--ghost);
+  cursor: pointer;
+}
+
+.fiber-pill button:first-child { border-left: 0; }
+.fiber-pill button[hidden] { display: none; }
+
+.fiber-pill button:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* ---------------------------------------------------------------- tiers --- */
+/* Semantic zoom (tiers.ts): fiber → thread → cloth. Each band is a different
+   DRAWING of the same card, swapped instantly — no transition, no fade: a
+   dissolve would read as loading, the cut reads as a change of altitude.
+   Type and hairlines counter-scale by --z so what the band is *about* stays
+   legible on screen while the world shrinks. */
+
+/* full band, off-screen: the prose exists but is not laid out or painted.
+   Only bodies are dropped — the card's box and title stay, so the cloth keeps
+   its shape and edges keep their anchors. */
+.card-culled .card-body { display: none; }
+
+/* --- title-card (thread) — the sheet stays, only its name is written --- */
+
+.card.tier-title .card-body { display: none; }
+/* curating happens at reading range; at this altitude you are navigating */
+.card.tier-title .card-unpin { display: none; }
+
+.card.tier-title .card-head {
+  flex: 1 1 auto;
+  align-items: center;
+  border-bottom: 0;
+  /* WORLD units, deliberately not counter-scaled: at the bottom of the band a
+     counter-scaled inset ate a third of a 70px-wide card and left the name no
+     measure to be written in. The margin shrinks with the sheet, as a margin does. */
+  padding: 12px 14px;
+}
+
+.card.tier-title .card-head-stack {
+  width: 100%;
+  gap: calc(4px / var(--z, 1));
+}
+
+/* screen-constant within reason: the cap keeps a long title from outgrowing
+   its own card at the bottom of the band. The cap is a fraction of THIS card's
+   width (cqw), not a flat 80px — a flat cap knows nothing about the measure it
+   has to fit, and at z≈0.2 it clipped "Thermodynamics" mid-word. Below z≈0.37
+   the type therefore stops being screen-constant and shrinks with the sheet,
+   which is honest: the whole name stays written, it just gets further away.
+   break-word + hyphens are the last resort for a word longer than the card. */
+.card.tier-title .card-title {
+  font-size: min(calc(17px / var(--z, 1)), 11.5cqw);
+  line-height: 1.12;
+  overflow-wrap: break-word;
+  hyphens: auto;
+}
+
+.card.tier-title .card-kind,
+.card.tier-title .card-marks {
+  font-size: min(46px, calc(10px / var(--z, 1)));
+}
+
+.card.tier-title .card-marks {
+  display: block;
+  font-family: var(--mono);
+  color: var(--sig);
+}
+
+.card.tier-title[data-thread="out"] .card-marks { color: var(--s2); }
+
+/* --- glyph (cloth) — the card is a knot; the edges are the subject --- */
+
+.card.tier-glyph {
+  border-color: transparent;
+  background: transparent;
+  overflow: visible;
+  /* the footprint stops swallowing the paper: at this range the gaps between
+     glyphs must drag the cloth, or panning feels broken */
+  pointer-events: none;
+}
+
+.card.tier-glyph .card-body,
+.card.tier-glyph .card-kind,
+.card.tier-glyph .card-unpin { display: none; }
+
+/* the head IS the glyph: a hairline square, screen-constant, centred on the
+   footprint so the edge layer's point anchors land inside it. It is still the
+   drag handle, and selection still inverts it into a filled atom. */
+.card.tier-glyph .card-head {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: block;
+  width: calc(22px / var(--z, 1));
+  height: calc(22px / var(--z, 1));
+  padding: 0;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-width: calc(1px / var(--z, 1));
+  pointer-events: auto;
+}
+
+.card.tier-glyph[data-thread="out"] .card-head { border-color: var(--ghost); }
+
+/* re-stated at glyph specificity: state is still a filled atom, never a tint */
+.card.tier-glyph[data-selected] .card-head,
+.card.tier-glyph[data-ping] .card-head,
+.card.tier-glyph[data-thread="in"] .card-head { background: var(--ink); }
+
+/* the label is a caption on the knot, not a target: it must never eat a drag
+   on the paper it happens to overhang */
+.card.tier-glyph .card-head-stack {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translate(-50%, 0);
+  width: calc(84px / var(--z, 1));
+  padding-top: calc(3px / var(--z, 1));
+  text-align: center;
+  pointer-events: none;
+}
+
+.card.tier-glyph .card-title {
+  font-size: calc(8.5px / var(--z, 1));
+  line-height: 1.2;
+  color: var(--s2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card.tier-glyph[data-selected] .card-title,
+.card.tier-glyph[data-thread="in"] .card-title { color: var(--ink); }
+
+/* -------------------------------------------------------------- toolbar --- */
+
+#toolbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  /* the right end is reserved for the pinned instrument (.tb-zoom): the strip
+     clips its own left-hand groups before it clips the altitude readout */
+  padding-right: 7.5rem;
+  border-bottom: 1px solid var(--ink);
+  background: var(--paper);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow: hidden;
+  z-index: 10;
+}
+
+#toolbar .brand {
+  font-family: var(--serif);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.tb-group {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-left: 0.6rem;
+  border-left: 1px solid var(--ghost);
+}
+
+.tb-label { color: var(--s2); margin-right: 0.1rem; }
+
+.tb-button {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.3;
+  padding: 2px 6px;
+  /* the strip is one line: a button clips before it ever wraps its own label */
+  white-space: nowrap;
+  flex: none;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--ghost);
+  cursor: pointer;
+}
+
+.tb-button:hover { border-color: var(--ink); }
+
+.tb-button[data-active] {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+/* the kept threads. One strip: the list clips rather than wrapping the bar. */
+.tb-threads {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 26vw;
+  overflow: hidden;
+}
+
+.tb-threads .tb-button {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tb-empty { color: var(--ghost); }
+
+.tb-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--s2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tb-count, .tb-save, .tb-zoom {
+  flex: none;
+  padding-left: 0.6rem;
+  border-left: 1px solid var(--ghost);
+  color: var(--s2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The instrument is the one thing the strip may never clip: it is pinned to the
+   right edge on its own paper, above the flow, and the toolbar's reserved
+   padding keeps the flowing items from sliding under it. */
+.tb-zoom {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem 0 0.6rem;
+  background: var(--paper);
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* the strip is one line at any width: labels go first, then the card count */
+@media (max-width: 1040px) { .tb-label { display: none; } }
+@media (max-width: 860px) { .tb-count { display: none; } }
+.tb-save[data-state="error"] { color: var(--sig); }
+.tb-save[data-state="saved"] { color: var(--s2); }
+
+/* --------------------------------------------------------- thread plate --- */
+/* The nameplate rides in SCREEN space over the root card, so it stays legible
+   at any zoom — a name is chrome about the thread, not part of the cloth. */
+
+.thread-plate {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 2px 6px;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  z-index: 5;
+}
+
+.thread-plate[hidden] { display: none; }
+
+.thread-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  width: 13rem;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--ghost);
+  outline: none;
+}
+
+.thread-name::placeholder { color: var(--s2); }
+.thread-name:focus { border-bottom-color: var(--ink); }
+
+.thread-plate-count {
+  color: var(--s2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- composer --- */
+
+#composer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  min-height: 2rem;
+  max-height: 30vh;
+  overflow-y: auto;
+  border-top: 1px solid var(--ink);
+  background: var(--paper);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 0.35rem 0.75rem;
+  white-space: pre-wrap;
+  z-index: 10;
+}
+
+.composer-line { line-height: 1.5; }
+
+#composer:empty::before {
+  content: "composer — thread and fiber handoffs will be typed here";
+  color: var(--s2);
+}

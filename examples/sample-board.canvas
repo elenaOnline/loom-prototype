@@ -1,0 +1,62 @@
+{
+ "nodes": [
+  {
+   "id": "nmsfql44j111wb",
+   "type": "link",
+   "x": -93,
+   "y": 233,
+   "width": 380,
+   "height": 460,
+   "url": "https://en.wikipedia.org/wiki/Turing_machine",
+   "x-powerset": { "kind": "wiki", "title": "Turing machine", "ref": "Turing machine" }
+  },
+  {
+   "id": "nmsfqo00221cst",
+   "type": "link",
+   "x": 347,
+   "y": 145,
+   "width": 380,
+   "height": 460,
+   "url": "https://en.wikipedia.org/wiki/Abstract_machine",
+   "x-powerset": { "kind": "wiki", "title": "Abstract machine", "ref": "Abstract machine" }
+  },
+  {
+   "id": "nmsfqo7ht4z6j",
+   "type": "link",
+   "x": 787,
+   "y": 233,
+   "width": 380,
+   "height": 460,
+   "url": "https://en.wikipedia.org/wiki/Computer_science",
+   "x-powerset": { "kind": "wiki", "title": "Computer science", "ref": "Computer science" }
+  },
+  {
+   "id": "nmsfqyfjn2dm4",
+   "type": "text",
+   "x": 160,
+   "y": 468,
+   "width": 200,
+   "height": 150,
+   "text": "the tape is the interesting part — compare lambda calculus",
+   "x-powerset": { "kind": "note", "title": "later coined the term \"Turing machine\" in a rev…", "ref": "" }
+  }
+ ],
+ "edges": [
+  { "id": "emsfqo00637ho", "fromNode": "nmsfql44j111wb", "toNode": "nmsfqo00221cst", "fromSide": "right", "toSide": "left", "x-powerset": { "kind": "trail" } },
+  { "id": "emsfqo7hv5fk5", "fromNode": "nmsfqo00221cst", "toNode": "nmsfqo7ht4z6j", "fromSide": "right", "toSide": "left", "x-powerset": { "kind": "trail" } },
+  { "id": "emsfqpitp6uuq", "fromNode": "nmsfql44j111wb", "toNode": "nmsfqo00221cst", "fromSide": "top", "toSide": "top", "x-powerset": { "kind": "return" } },
+  { "id": "emsfqyfk53i6", "fromNode": "nmsfql44j111wb", "toNode": "nmsfqyfjn2dm4", "fromSide": "right", "toSide": "left", "x-powerset": { "kind": "tether" } }
+ ],
+ "x-powerset": {
+  "version": 1,
+  "topologyMode": "returnedge",
+  "contentMode": "wiki",
+  "threads": [
+   { "id": "tmsfqw3l011j4", "name": "machines all the way down", "nodeIds": ["nmsfql44j111wb", "nmsfqo00221cst", "nmsfqo7ht4z6j"] }
+  ],
+  "marks": [
+   { "id": "mmsfqxq881eb6", "nodeId": "nmsfql44j111wb", "quote": "that manipulates symbols on a strip of tape according to a table of rules. Despite the mo", "kind": "highlight" },
+   { "id": "mmsfqyfkh4aao", "nodeId": "nmsfql44j111wb", "quote": "later coined the term \"Turing machine\" in a review. With this model,", "kind": "note", "noteNodeId": "nmsfqyfjn2dm4" }
+  ]
+ }
+}
