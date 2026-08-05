@@ -112,6 +112,25 @@ const ZOOM_SENSITIVITY = 0.012;
 /** cap a single event's zoom step so a coarse mouse wheel can't jump a decade */
 const MAX_STEP_FACTOR = 2;
 
+/**
+ * How far the published `--z` may drift from the live zoom DURING a gesture.
+ * Writing `--z` on #world invalidates the style of EVERY element under it
+ * (custom properties inherit, and `calc(1px / var(--z))` is read by card
+ * borders, every edge stroke, every hit stroke, the glyph square, the tier
+ * type) — so the recalc is linear in the size of the board and was the whole
+ * of the "laggy once the board is complex" feel. Measured 2026-08-05 on a
+ * 60-card / 71-edge board: 2.4ms per frame for the publish, 0.02ms for the
+ * transform. Quantising bounds the publishes to the zoom DISTANCE travelled
+ * (one per 3%) instead of one per frame.
+ *
+ * 3% off on a 1px hairline is 0.03px — invisible, and only while the world is
+ * moving. The exact value lands on the settle below, so at rest the hairlines
+ * are pixel-identical to what they always were.
+ */
+const Z_PUBLISH_TOLERANCE = 0.03;
+/** ms of camera stillness after which the exact `--z` is published */
+const Z_SETTLE_MS = 110;
+
 const NO_INSETS: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
 
 export function clampZ(z: number): number {
@@ -185,6 +204,9 @@ export function createCamera(options: CameraOptions): Camera {
   let rafId = 0;
   let dirty = true;
   let anim: Anim | null = null;
+  /** the value currently written to `--z`; NaN until the first publish */
+  let publishedZ = Number.NaN;
+  let settleTimer = 0;
 
   // ---- geometry -----------------------------------------------------------
 
@@ -269,12 +291,47 @@ export function createCamera(options: CameraOptions): Camera {
     if (anim) schedule();
   }
 
+  /**
+   * `--z` is what world-space rules divide by, so hairlines stay 1px on screen
+   * at every zoom instead of thickening in and vanishing out. It is also the
+   * single most expensive thing the camera can touch: the write invalidates the
+   * style of the whole `#world` subtree. Only ever go through here.
+   */
+  function publishZ(z: number): void {
+    if (publishedZ === z) return;
+    publishedZ = z;
+    world.style.setProperty("--z", String(z));
+  }
+
+  /** the exact publish, `Z_SETTLE_MS` after the camera last moved */
+  function armSettle(): void {
+    if (settleTimer !== 0) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = 0;
+      publishZ(state.z);
+    }, Z_SETTLE_MS) as unknown as number;
+  }
+
+  function disarmSettle(): void {
+    if (settleTimer === 0) return;
+    clearTimeout(settleTimer);
+    settleTimer = 0;
+  }
+
   function apply(): void {
     dirty = false;
     world.style.transform = `translate(${state.x}px, ${state.y}px) scale(${state.z})`;
-    // published so world-space rules can divide by it — hairlines stay 1px on
-    // screen at every zoom instead of thickening in and vanishing out.
-    world.style.setProperty("--z", String(state.z));
+    // The transform is composited and costs nothing; `--z` costs a style recalc
+    // of every card, every edge and every word on the board. So during a gesture
+    // the hairlines ride a slightly stale `--z` (≤3% — 0.03px on a hairline) and
+    // the exact value lands the moment the camera stops. A pan never publishes
+    // at all; a zoom publishes once per 3% of distance travelled, not per frame.
+    const drift = state.z / publishedZ;
+    if (!(drift > 1 - Z_PUBLISH_TOLERANCE && drift < 1 + Z_PUBLISH_TOLERANCE)) {
+      publishZ(state.z);
+    }
+    if (publishedZ === state.z) disarmSettle();
+    else armSettle();
     for (const cb of Array.from(listeners)) cb(state);
   }
 
@@ -519,6 +576,7 @@ export function createCamera(options: CameraOptions): Camera {
     destroy() {
       if (rafId !== 0) cancelAnimationFrame(rafId);
       rafId = 0;
+      disarmSettle();
       anim = null;
       pendingFit = null;
       observer?.disconnect();
