@@ -37,7 +37,9 @@ sessions compose instead of churning. Deviate only with a dated note added at th
 - `src/trail.ts` — link-click → spawn logic; the **three-way topology toggle**
   (`duplicate | linkback | returnedge`); placement of spawned cards near source.
 - `src/threads.ts` — first-class threads: build from trail selection, name, highlight as
-  unit, pull-taut layout gesture, handoff → `host.sendToComposer(...)`.
+  unit, pull-taut layout gesture, pin (freeze membership), handoff → `host.sendToComposer(...)`.
+  Thread IDENTITY (tip-tracking, branch, break) is `model.ts`'s: `growthForEdge` and
+  `resolveThreadForRun` are pure predicates there; this module only applies them.
 - `src/tiers.ts` — semantic zoom: swap card body by z band. Bands (tune by feel):
   z ≥ 0.55 full · 0.18 ≤ z < 0.55 title-card (serif title + mono path/status) ·
   z < 0.18 glyph (hairline square + pixel-scale label). CSS class swap on `.card`,
@@ -63,6 +65,9 @@ File: `board.canvas` (JSON Canvas 1.0 — jsoncanvas.org). Be liberal on read.
   from:nodeId|null, src:url-or-path|null, x0,y0}` — `x0/y0` = world coords at birth, nodes only.
   A **thread entry** carries the same object as a plain TOP-LEVEL `prov` field (it has no
   `x-powerset` block to nest one in). Written at creation, backfilled on load, preserved verbatim.
+- **A thread entry** is `{id,name,nodeIds,pinned?,broken?,prov}` (wave-2 §1). `pinned: true`
+  freezes membership; `broken: {at, missing:[{id,index,title}]}` records cards an edit took away.
+  Both are written ONLY when present, so an ordinary thread's entry is the wave-1 shape.
 - **Unknown fields are preserved verbatim** on every object and at board level — additive schema
   discipline. A hand-edit, a plugin's key, or an agent's extension survives a round trip.
 Marks anchor by quoted text (first occurrence), not offsets — survives re-render, fine for
@@ -519,3 +524,89 @@ honest thing about how the object they make came to be.
   (`null` is the honest answer and the file may be a copy); and rewriting the P0 folder's
   `BOARD-CONVENTION.md` to the new thread-`prov` spot — that file lives outside this repo and
   belongs to whoever runs the next agent experiment.
+
+**2026-08-06 — wave 2, stage 1 (thread identity: tip-tracking + pin).**
+
+Wave 1 identified a thread by exact-run equality, so a named thread silently lost its name the
+moment the trail grew by one spawn (FINDINGS Q2, observed live on the owner's board). The
+replacement is two rules that are deliberately NOT the same rule, plus one invariant.
+
+- **Growth is an EVENT; resolution is a MATCH.** `model.growthForEdge(threads, edges, edge)` is
+  a pure predicate that says which threads a newly-arrived trail edge extends;
+  `threads.ts` applies it from its board listener and does nothing else with it.
+  `model.resolveThreadForRun(threads, run, edge?)` decides which stored thread a walked run just
+  grabbed. Both live in `model.ts` beside `branchStartEdgeIds` for the same reason stage 3 gave:
+  they are statements about the graph, not about drawing — and it makes them testable off-DOM.
+- **Growth never fires on a load.** `board.load()` emits `reset`, never `graph`, so a membership
+  a FILE declared is respected exactly as written; only what happens next, in front of the user,
+  can extend it. This is additive-schema discipline applied to threads, and it is what keeps an
+  agent's declared reply from being quietly annexed the first time the board is opened.
+- **The invariant: a named thread's selection IS its stored membership.** The walked run only
+  decides *which* thread you grabbed. Without it, "grab" and "grow" fight over the same state
+  every time a run reaches past a thread. It also made `commitName` drop its `setThreadNodes`
+  call — a rename must not annex whatever the walk reached, and must not walk through a pin.
+- **Branches fall out of the existing "primary chain" reading.** A thread extends only when the
+  new edge is its tip's FIRST outgoing trail edge (or its root's first incoming one) — the same
+  insertion-order reading `branchStartEdgeIds` and the thread walk already share. A second spawn
+  from the same card is a branch: the name stays with the spine, the branch is born unnamed. No
+  new state, and the three surfaces cannot disagree about what a branch is.
+  - Consequence, verified and accepted: unpinning does **not** retroactively swallow what the
+    trail did while the thread was frozen. If the tip spawned during the freeze, that first
+    outgoing edge is spent, and the next one reads as a branch. Unpinning hands the thread back
+    to its own tip, not to the trail's.
+- **Growth from the ROOT end is supported** (the brief says "either endpoint"), and it is the
+  shape an agent's anchor edge takes. It is `graph`-event-gated like tip growth, so the P0 board
+  — whose anchor edge is already in the file — is unaffected by it.
+- **The P0 anchor-edge case (FINDINGS "P0", convention gap 3) is answered by CONTAINMENT, not by
+  extension.** The P0 agent declared a 6-card reply and anchored it with a trail edge from the
+  owner's own margin note, so the walk yields 7 cards and no equality test can ever match.
+  `resolveThreadForRun` matches the declared 6 as a contiguous block of the 7: **the name
+  resolves from either the anchor edge or any inner edge, and the membership is left exactly as
+  the agent wrote it.** Deciding the other way (extend to fit) would annex a human's note into an
+  agent's thread merely because the walk passed through it, and would rewrite a file's
+  declaration on first open. The anchor stays visible as what it is — the card the reply hangs
+  from — and the status line says so (`the run reaches 1 card further`).
+- **A name never detaches silently** — the brief's one hard constraint, and wave 1 broke it two
+  ways. `removeNode` used to filter the id out of every thread and *delete* any thread that hit
+  zero cards. Now the loss is recorded on the thread (`broken: {at, missing:[{id,index,title}]}`),
+  the surviving membership stays in order, and a thread that loses every card **keeps its name
+  and its whole loss list**. The title is captured at removal time because it is the only
+  readable trace a deleted card leaves.
+  - Resolution tier 2 exists for exactly this: a broken thread's survivors are matched as an
+    order-preserving SUBSEQUENCE of the run (gaps allowed), so grabbing the run after a
+    mid-thread deletion still hands back the name — marked broken — instead of "unnamed".
+  - The break draws itself with no extra code: `edgesOfRun` finds no edge across the gap, so the
+    selected thread has a visible hole in the weave.
+  - `mendThread` is the only way to clear a break, and it is an explicit click on the readout.
+    It clears the record, never the name and never the membership.
+- **State is geometry, on both surfaces.** Nameplate: an 8px open atom = "still follows its tip",
+  the same atom filled = pinned; the plate's frame goes dashed and grows a `n lost` button when
+  broken. Toolbar chip: a 6px filled `currentColor` atom for pinned (so it survives the chip's
+  inversion when active), `border-style: dashed` for broken. No tint, no badge colour, no glow.
+- **New verb `pin`** — key `p`, a toolbar button that flips to `unpin`, and the nameplate atom.
+  Only a NAMED thread can be pinned: a pin freezes a name's membership, and an unnamed run has
+  no name to freeze. Reversible by construction (ideation §7 meta-rule).
+- **The pull stash is keyed by thread identity now** (`threadId ?? run:<ids>`), not by the
+  membership string. A thread that follows its tip while pulled would otherwise change key
+  mid-pull and strand its own undo — the same failure wave 1 already logs for reloads. This is
+  also the only form of the key that can survive the reload stage 3 has to fix.
+- **Handoff tells the truth about a broken or pinned thread**: `· pinned` on the header line, and
+  one `(missing: <title> — was card N)` line per loss. An agent on the other end is told what the
+  line lost rather than handed a shorter line as if it were whole.
+- **Verified.** `npm run build` clean. A compiled-to-node harness (49 assertions) over the real
+  `Out/p0-agent-thread/board.canvas` and `Out/sample-board.canvas` plus synthetic boards: the P0
+  name resolves from both the anchor edge and an inner edge with membership untouched; the two
+  human threads on that board do not claim the reply run; `load(save(x)) === save(x)` still holds
+  with pins and breaks present, and unpinned/unbroken threads gain no new keys. Then in-browser
+  against the OWNER'S REAL 28-card board: pin by `p` (status, plate atom, chip atom, button flip,
+  `pinned:true` persisted to the file), a 5-card named thread grown to 6 and re-grabbed **by
+  name** (the wave-1 bug, gone), spine-vs-branch, pin freezing growth, a mid-thread delete
+  surfacing as a dashed plate + `1 lost` + dashed chip, and a thread that lost every card keeping
+  its name in the toolbar. The board was restored to 28 cards / 28 edges / 5 marks / 2 unpinned,
+  unbroken threads afterwards.
+- **Not done, deliberately:** merging/splitting threads and hand-editing membership (still
+  ideation §7.4 open questions — the gestures would be invented, not felt); a card belonging
+  visibly to two threads (the last selection still wins the paint); multi-thread selection;
+  auto-mending a break when the deleted card is re-spawned (a new card is a new placement, and
+  pretending otherwise is the silent behaviour the constraint forbids); persisting the pull stash
+  (stage 3's, and the key is now ready for it); any prov UI (§8.3 is out of wave 2).

@@ -59,13 +59,15 @@ tethered note, all legible in ~90 lines of JSON.
 `1/2/3` topology mode · `f` zoom-to-fit · double-click paper fits · ctrl/⌘+wheel or pinch
 zooms at cursor · wheel pans · drag paper pans · drag a card by its title bar · alt-drag
 card→card draws a manual edge · click a trail edge to grab its thread · `t` pull taut /
-relax · `c` hand off · Esc deselect · select text in a card for the mark pill.
+relax · `n` name · `p` pin (freeze a named thread's membership) · `c` hand off · Esc
+deselect · select text in a card for the mark pill.
 
 ## Design language
 
 One flat sheet of paper. Five color roles (`paper · ink · sig · s2 · ghost`), 1px hairlines,
 serif for prose, monospace for chrome, no shadows, no rounded corners, no gradients. State
-is geometry: solid = walked, dashed = asserted, accent loop = returned, faint = held.
+is geometry: solid = walked, dashed = asserted, accent loop = returned, faint = held,
+filled atom = pinned, dashed chip = a thread that outlived part of its line.
 
 `ARCHITECTURE.md` is the internal build contract the code was written against, deviation
 log included.

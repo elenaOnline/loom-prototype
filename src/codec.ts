@@ -10,6 +10,7 @@
 import type {
   Board,
   BoardSnapshot,
+  BrokenLink,
   ContentMode,
   EdgeKind,
   Foreign,
@@ -21,6 +22,7 @@ import type {
   ProvBy,
   ProvHow,
   Thread,
+  ThreadBreak,
   TopologyMode,
 } from "./model";
 import {
@@ -51,7 +53,7 @@ const NODE_BASE_KEYS = ["id", "type", "x", "y", "width", "height", "x-powerset"]
 const NODE_EXT_KEYS = new Set(["kind", "title", "ref", "prov"]);
 const EDGE_BASE_KEYS = new Set(["id", "fromNode", "toNode", "label", "x-powerset"]);
 const EDGE_EXT_KEYS = new Set(["kind", "prov"]);
-const THREAD_KEYS = new Set(["id", "name", "nodeIds", "prov"]);
+const THREAD_KEYS = new Set(["id", "name", "nodeIds", "pinned", "broken", "prov"]);
 const MARK_KEYS = new Set(["id", "nodeId", "quote", "kind", "noteNodeId"]);
 const BOARD_BASE_KEYS = new Set(["nodes", "edges", "x-powerset"]);
 const BOARD_EXT_KEYS = new Set([
@@ -145,8 +147,20 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
 
   const threads: Json[] = snapshot.threads.map((t) => {
     // `prov` sits at the TOP LEVEL of a thread entry: a thread has no
-    // `x-powerset` block of its own to nest it inside (P0 gap #1)
-    const out: Json = { id: t.id, name: t.name, nodeIds: t.nodeIds.slice(), prov: provOut(t.prov) };
+    // `x-powerset` block of its own to nest it inside (P0 gap #1).
+    // `pinned` and `broken` are written ONLY when they are true/present, so an
+    // ordinary thread's entry stays byte-identical to the wave-1 shape and the
+    // codec's fixpoint property survives (stage 0's invariant 1).
+    const out: Json = {
+      id: t.id,
+      name: t.name,
+      nodeIds: t.nodeIds.slice(),
+      ...(t.pinned ? { pinned: true } : {}),
+      ...(t.broken && t.broken.missing.length > 0
+        ? { broken: { at: t.broken.at, missing: t.broken.missing.map((m) => ({ ...m })) } }
+        : {}),
+      prov: provOut(t.prov),
+    };
     replay(out, t.foreign?.top);
     if (t.foreign?.ext) out["x-powerset"] = { ...t.foreign.ext };
     return out;
@@ -335,6 +349,11 @@ function readThreads(raw: unknown): Thread[] {
       nodeIds,
       prov: readProv(item["prov"] ?? nestedProv, { from: nodeIds[0] ?? null }),
     };
+    // a pin is a fact about the thread, so a hand-edit can set one; anything
+    // other than a literal `true` is read as unpinned (and then not rewritten)
+    if (item["pinned"] === true) thread.pinned = true;
+    const broke = readBreak(item["broken"]);
+    if (broke) thread.broken = broke;
     const top = pickForeign(item, new Set([...THREAD_KEYS, "x-powerset"]));
     const leftover = nested && Object.keys(nested).length > 0 ? nested : undefined;
     if (top || leftover) {
@@ -343,6 +362,24 @@ function readThreads(raw: unknown): Thread[] {
     out.push(thread);
   }
   return out;
+}
+
+/**
+ * A break record, liberal on read. An entry with no surviving `missing` list is
+ * not a break — it is noise — and is dropped rather than kept as an empty husk
+ * that would make the toolbar draw a dashed chip for nothing.
+ */
+function readBreak(raw: unknown): ThreadBreak | undefined {
+  if (!isObject(raw)) return undefined;
+  const missing: BrokenLink[] = [];
+  for (const item of asArray(raw["missing"])) {
+    if (!isObject(item)) continue;
+    const id = str(item["id"]);
+    if (!id) continue;
+    missing.push({ id, index: num(item["index"]) ?? 0, title: str(item["title"]) ?? "" });
+  }
+  if (missing.length === 0) return undefined;
+  return { at: str(raw["at"]) ?? null, missing };
 }
 
 function readMarks(raw: unknown): Mark[] {

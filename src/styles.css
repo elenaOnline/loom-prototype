@@ -637,6 +637,22 @@ body {
 
 .tb-empty { color: var(--ghost); }
 
+/* Thread state on a chip is GEOMETRY, never a tint (wave-2 §1): a filled atom
+   says pinned — this membership is frozen; a dashed chip says broken — this
+   name outlived part of its line. `currentColor` so both read correctly when
+   the chip inverts for the active thread. */
+.tb-atom {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  vertical-align: baseline;
+  border: 1px solid currentColor;
+  background: currentColor;
+}
+
+.tb-button[data-broken] { border-style: dashed; }
+
 .tb-status {
   flex: 1 1 auto;
   min-width: 0;
@@ -715,6 +731,44 @@ body {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* PIN as geometry (wave-2 §1). Open atom = this thread still follows its tip;
+   the same atom filled = frozen. The counterpart of the edge layer's open fork
+   ring vs. filled return atom — one idiom, two surfaces. */
+.thread-pin {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  cursor: pointer;
+}
+
+.thread-pin[data-pinned] { background: var(--ink); }
+/* an un-named run has nothing to freeze: the atom recedes rather than lying */
+.thread-pin[data-off] { border-color: var(--ghost); cursor: default; }
+
+/* A NAME NEVER DETACHES SILENTLY (the brief's hard constraint): a thread that
+   lost cards keeps its name and says so. Dashed = the line has a hole in it;
+   the plate's own frame goes dashed too, so the break reads at a glance. */
+.thread-plate[data-broken] { border-style: dashed; }
+
+.thread-break {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 3px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px dashed var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.thread-break[hidden] { display: none; }
+.thread-break:hover { border-style: solid; }
 
 /* ------------------------------------------------------------- composer --- */
 

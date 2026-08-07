@@ -157,14 +157,53 @@ export interface LoomEdge {
 }
 
 /**
+ * One card a thread was holding when the board let it go. Kept by id AND by the
+ * two things that survive the node's deletion — where it sat in the run, and
+ * what it was called — because the whole point of a break record is that it can
+ * still be READ after the thing it names is gone.
+ */
+export interface BrokenLink {
+  id: string;
+  /** its position in the membership at the moment it left */
+  index: number;
+  /** its title at the moment it left — the only readable trace it leaves */
+  title: string;
+}
+
+/**
+ * A thread whose membership lost cards to an edit (wave-2 §1's hard
+ * constraint: **a name never detaches silently**). The board does not quietly
+ * shrink the thread and let its name go stale — it records the loss, keeps the
+ * name, and every surface that draws the thread draws the break as geometry.
+ * Cleared only by an explicit `mendThread`.
+ */
+export interface ThreadBreak {
+  /** when the FIRST loss was noticed; `null` only if the stamp was unreadable */
+  at: string | null;
+  /** in loss order, not run order */
+  missing: BrokenLink[];
+}
+
+/**
  * A thread is an ORDERED run of node ids — a line of thought, first-class:
  * nameable, editable, pullable, handable to an agent (ideation §6.6). Order is
  * trail order (root first); it is the order a handoff types.
+ *
+ * Identity (wave-2 §1, replacing wave-1's exact-run equality): a thread IS its
+ * membership. The membership follows the trail's tip as the trail grows — see
+ * `growthForEdge` — unless the thread is `pinned`, which freezes it.
  */
 export interface Thread {
   id: string;
   name: string;
   nodeIds: string[];
+  /**
+   * Frozen: this thread no longer follows its tip. Written to the file only
+   * when true, so an unpinned thread's entry is byte-identical to wave 1's.
+   */
+  pinned?: boolean;
+  /** set when an edit orphaned part of the membership; never cleared silently */
+  broken?: ThreadBreak;
   /**
    * A thread entry has no `x-powerset` block to nest provenance inside — the
    * whole thread list already lives in one. So `prov` sits at the TOP LEVEL of
@@ -304,6 +343,10 @@ export interface Board {
   addThread(name: string, nodeIds: string[], prov?: ProvSeed): Thread;
   renameThread(id: string, name: string): void;
   setThreadNodes(id: string, nodeIds: string[]): void;
+  /** PIN: freeze membership — a pinned thread stops following its tip */
+  setThreadPinned(id: string, pinned: boolean): void;
+  /** acknowledge a break: the record goes, the surviving membership stays */
+  mendThread(id: string): void;
   removeThread(id: string): void;
 
   topologyMode(): TopologyMode;
@@ -345,6 +388,164 @@ export function branchStartEdgeIds(edges: readonly LoomEdge[]): Set<string> {
     else spawned.add(e.from);
   }
   return out;
+}
+
+/** a named thread following its tip: which thread grows, and to what */
+export interface ThreadGrowth {
+  threadId: string;
+  /** the node joining the membership */
+  nodeId: string;
+  /** which end of the thread it joined */
+  end: "tip" | "root";
+  /** the membership the thread should now hold */
+  nodeIds: string[];
+}
+
+/**
+ * TIP-TRACKING (wave-2 §1). Wave 1 identified a thread by exact-run equality,
+ * so a named 4-card thread lost its name the instant the trail grew by one
+ * spawn (FINDINGS Q2). The replacement: a named thread FOLLOWS ITS TIP.
+ *
+ * This is an EVENT rule, not a matching rule, and that distinction is the whole
+ * design. Membership changes when the board watches a trail edge appear at one
+ * of a thread's two ends — never as a side effect of loading a file. So a
+ * thread declared in a file (an agent's reply, a hand edit) keeps exactly the
+ * membership it declared, and only what happens *next*, in front of the user,
+ * can extend it. Additive-schema discipline applied to threads.
+ *
+ * The three cases, all from one reading of "primary" that `branchStartEdgeIds`
+ * and `threads.ts`'s walk already share — insertion order is the spine:
+ *
+ *   - the new edge leaves the thread's TIP and is that tip's FIRST outgoing
+ *     trail edge → the line continued; the thread extends.
+ *   - the new edge leaves the tip but the tip already spawned once → this is a
+ *     BRANCH. The name stays with the spine; the branch is born unnamed.
+ *   - the new edge arrives at the thread's ROOT and is that root's FIRST
+ *     incoming trail edge → the trail grew from the other endpoint (the brief
+ *     says growth from *either* endpoint extends), so the thread extends
+ *     upstream. In practice this is the shape an agent's anchor edge takes.
+ *
+ * A pinned thread never grows. Neither does one that already holds the node
+ * (a revisit is not new membership — and `return` edges are not trail edges,
+ * so a return never grows a thread at all).
+ */
+export function growthForEdge(
+  threads: readonly Thread[],
+  edges: readonly LoomEdge[],
+  edge: LoomEdge,
+): ThreadGrowth[] {
+  if (edge.kind !== "trail") return [];
+  const firstOut = edges.find((e) => e.kind === "trail" && e.from === edge.from);
+  const firstIn = edges.find((e) => e.kind === "trail" && e.to === edge.to);
+  const out: ThreadGrowth[] = [];
+  for (const t of threads) {
+    if (t.pinned) continue;
+    if (t.nodeIds.length === 0) continue;
+    const tip = t.nodeIds[t.nodeIds.length - 1];
+    const root = t.nodeIds[0];
+    if (edge.from === tip && firstOut?.id === edge.id && !t.nodeIds.includes(edge.to)) {
+      out.push({ threadId: t.id, nodeId: edge.to, end: "tip", nodeIds: [...t.nodeIds, edge.to] });
+      continue;
+    }
+    if (edge.to === root && firstIn?.id === edge.id && !t.nodeIds.includes(edge.from)) {
+      out.push({
+        threadId: t.id,
+        nodeId: edge.from,
+        end: "root",
+        nodeIds: [edge.from, ...t.nodeIds],
+      });
+    }
+  }
+  return out;
+}
+
+/** two runs are the same run: same ids, same order */
+export function sameOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+/** the start index of `member` inside `run` as a CONTIGUOUS block, or -1 */
+function blockStart(run: readonly string[], member: readonly string[]): number {
+  if (member.length === 0 || member.length > run.length) return -1;
+  for (let i = 0; i + member.length <= run.length; i += 1) {
+    let hit = true;
+    for (let j = 0; j < member.length; j += 1) {
+      if (run[i + j] !== member[j]) {
+        hit = false;
+        break;
+      }
+    }
+    if (hit) return i;
+  }
+  return -1;
+}
+
+/** every id of `member`, in order, somewhere in `run` — gaps allowed */
+function isSubsequence(run: readonly string[], member: readonly string[]): boolean {
+  if (member.length === 0) return false;
+  let i = 0;
+  for (const id of run) {
+    if (id === member[i]) i += 1;
+    if (i === member.length) return true;
+  }
+  return false;
+}
+
+function adjacentIn(ids: readonly string[], from: string, to: string): boolean {
+  const i = ids.indexOf(from);
+  return i >= 0 && ids[i + 1] === to;
+}
+
+/**
+ * RESOLUTION (wave-2 §1): which stored thread did this walked run just grab?
+ *
+ * Wave 1 asked for exact-run equality, and a name detached the moment the trail
+ * grew by one card (FINDINGS Q2, observed live on the owner's board). The rule
+ * here is CONTAINMENT, in two tiers.
+ *
+ * Tier 1 — the membership appears in the run as a CONTIGUOUS block. This is
+ * what resolves the **P0 anchor-edge case** (FINDINGS "P0", convention gap 3),
+ * and it is the reason the rule is containment and not "extend to fit": the P0
+ * agent declared a 6-card reply and anchored it with a trail edge from the
+ * owner's own margin note, so the walk yields 7 cards and no equality test can
+ * ever match. Containment matches the declared 6 — the name resolves, the
+ * agent's declaration is left exactly as written (we do not annex a human's
+ * note into an agent's thread merely because the walk passed through it), and
+ * the anchor stays visible as what it is: the card the reply hangs from.
+ *
+ * Tier 2 — a BROKEN thread's survivors appear in the run in order, with gaps.
+ * A card deleted mid-thread splits the membership; without this tier the name
+ * would read "unnamed" again, which is precisely the silent detach the brief
+ * forbids. The name comes back marked broken instead, and the missing step
+ * draws as a hole in the weave (no edge spans the gap).
+ *
+ * Ties: an exact match first, then a thread that HOLDS the clicked edge, then
+ * the longer claim. A one-card thread can only match a one-card run — it would
+ * otherwise claim every run it appears in.
+ */
+export function resolveThreadForRun(
+  threads: readonly Thread[],
+  run: readonly string[],
+  edge?: { from: string; to: string },
+): Thread | undefined {
+  let best: Thread | undefined;
+  let bestScore = -1;
+  for (const t of threads) {
+    if (t.nodeIds.length < 2 && t.nodeIds.length !== run.length) continue;
+    const contiguous = blockStart(run, t.nodeIds) >= 0;
+    const scattered = !contiguous && t.broken !== undefined && isSubsequence(run, t.nodeIds);
+    if (!contiguous && !scattered) continue;
+    const score =
+      (contiguous ? 4000 : 0) +
+      (sameOrder(t.nodeIds, run) ? 2000 : 0) +
+      (edge && adjacentIn(t.nodeIds, edge.from, edge.to) ? 1000 : 0) +
+      t.nodeIds.length;
+    if (score > bestScore) {
+      bestScore = score;
+      best = t;
+    }
+  }
+  return best;
 }
 
 /** refs compare case-insensitively with collapsed whitespace/underscores */
@@ -426,6 +627,11 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     // the brief's backfill shape is uniform: human · wander · at-unknown, even
     // for a thread, which is never literally wandered into being
     out.prov = t.prov ? cloneProv(t.prov) : backfillProv({ by: "human", how: "wander" });
+    if (t.pinned) out.pinned = true;
+    else delete out.pinned;
+    if (t.broken && t.broken.missing.length > 0) {
+      out.broken = { at: t.broken.at, missing: t.broken.missing.map((m) => ({ ...m })) };
+    } else delete out.broken;
     const foreign = cloneForeign(t.foreign);
     if (foreign) out.foreign = foreign;
     else delete out.foreign;
@@ -474,7 +680,8 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     },
 
     removeNode(id) {
-      if (!nodes.has(id)) return;
+      const gone = nodes.get(id);
+      if (!gone) return;
       nodes.delete(id);
       const dropped: string[] = [];
       for (const e of Array.from(edges.values())) {
@@ -483,14 +690,28 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
           dropped.push(e.id);
         }
       }
-      // marks and threads keep their shape; a removed placement just drops out.
       // A note card is half of a mark, so unpinning it takes the mark with it —
       // otherwise the source card keeps drawing an underline that leads nowhere.
       marks = marks.filter((m) => m.nodeId !== id && m.noteNodeId !== id);
-      threads = threads
-        .map((t) => ({ ...t, nodeIds: t.nodeIds.filter((n) => n !== id) }))
-        // a thread that lost every placement is no longer a line of thought
-        .filter((t) => t.nodeIds.length > 0);
+      // A thread, though, does NOT quietly shrink. Wave-2 §1's hard constraint
+      // is that a name never detaches silently, and wave 1 broke it twice over:
+      // the membership shrank (so the name stopped matching the run) and a
+      // thread that lost its last card was deleted outright — a name vanishing
+      // with no trace is the loudest silent detach there is. Now the loss is
+      // RECORDED, the name is kept, and every surface draws the break.
+      threads = threads.map((t) => {
+        const index = t.nodeIds.indexOf(id);
+        if (index < 0) return t;
+        const lost: BrokenLink = { id, index, title: gone.title };
+        return {
+          ...t,
+          nodeIds: t.nodeIds.filter((n) => n !== id),
+          broken: {
+            at: t.broken?.at ?? nowStamp(),
+            missing: [...(t.broken?.missing ?? []), lost],
+          },
+        };
+      });
       emit({ kind: "graph", nodeIds: [id], edgeIds: dropped });
     },
 
@@ -598,8 +819,35 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       let hit = false;
       threads = threads.map((t) => {
         if (t.id !== id) return t;
+        const kept = nodeIds.filter((n) => nodes.has(n));
+        if (kept.length === t.nodeIds.length && kept.every((n, i) => n === t.nodeIds[i])) return t;
         hit = true;
-        return { ...t, nodeIds: nodeIds.filter((n) => nodes.has(n)) };
+        return { ...t, nodeIds: kept };
+      });
+      if (hit) emit({ kind: "threads" });
+    },
+
+    setThreadPinned(id, pinned) {
+      let hit = false;
+      threads = threads.map((t) => {
+        if (t.id !== id || (t.pinned ?? false) === pinned) return t;
+        hit = true;
+        const next: Thread = { ...t };
+        if (pinned) next.pinned = true;
+        else delete next.pinned;
+        return next;
+      });
+      if (hit) emit({ kind: "threads" });
+    },
+
+    mendThread(id) {
+      let hit = false;
+      threads = threads.map((t) => {
+        if (t.id !== id || !t.broken) return t;
+        hit = true;
+        const next: Thread = { ...t };
+        delete next.broken;
+        return next;
       });
       if (hit) emit({ kind: "threads" });
     },

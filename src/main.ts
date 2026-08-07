@@ -144,6 +144,7 @@ const ui = createUi({
   canLoadFromDisk: supportsOpenFilePicker(),
   onHandOff: handOffSelection,
   onPull: () => threads.togglePull(),
+  onPin: () => threads.togglePin(),
   onThreadPick: (id) => threads.selectThread(id),
 });
 

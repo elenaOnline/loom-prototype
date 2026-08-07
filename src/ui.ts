@@ -3,7 +3,7 @@
 // Everything here is a switch on the experiment: which corpus, which topology,
 // which thread, where the board stands. Active state is inversion (ink ground,
 // paper text), never a tint. Keys: 1/2/3 topology · f fit (camera owns it) ·
-// t pull taut and Escape/n naming (threads.ts owns those) · c hand off.
+// t pull taut, p pin, and Escape/n naming (threads.ts owns those) · c hand off.
 
 import type { Camera } from "./camera";
 import type { Board, ContentMode, TopologyMode } from "./model";
@@ -34,6 +34,8 @@ export interface UiOptions {
   canLoadFromDisk: boolean;
   onHandOff: () => void;
   onPull: () => void;
+  /** freeze / unfreeze the selected thread's membership (wave-2 §1) */
+  onPin: () => void;
   onThreadPick: (threadId: string) => void;
 }
 
@@ -74,11 +76,13 @@ export function createUi(options: UiOptions): Ui {
   const threadGroup = group("thread");
   const pullButton = button("pull taut", () => options.onPull());
   pullButton.title = "t — gather the selected thread onto an even arc (reversible)";
+  const pinButton = button("pin", () => options.onPin());
+  pinButton.title = "p — freeze this thread's membership; unpinned, it follows its tip";
   const handButton = button("→ composer", () => options.onHandOff());
   handButton.title = "c — type the thread's ordered refs into the composer strip";
   const threadList = document.createElement("span");
   threadList.className = "tb-threads";
-  threadGroup.append(pullButton, handButton, threadList);
+  threadGroup.append(pullButton, pinButton, handButton, threadList);
 
   const boardGroup = group("board");
   boardGroup.appendChild(button("fit", () => camera.zoomToFit()));
@@ -150,13 +154,33 @@ export function createUi(options: UiOptions): Ui {
     toggle(pullButton, isPulled);
 
     const threads = board.threads();
+    const active = activeThread ? board.thread(activeThread) : undefined;
+    pinButton.textContent = active?.pinned ? "unpin" : "pin";
+    toggle(pinButton, active?.pinned === true);
+
     const frag = document.createDocumentFragment();
     if (threads.length === 0) {
       frag.appendChild(el("span", "tb-empty", "none kept"));
     }
     for (const thread of threads) {
       const b = button(thread.name, () => options.onThreadPick(thread.id));
-      b.title = `${thread.nodeIds.length} cards — select and frame this thread`;
+      const notes = [`${thread.nodeIds.length} cards`];
+      // state as GEOMETRY on the chip, matching the nameplate: a filled atom is
+      // "pinned — this membership is frozen"; a dashed chip is "broken — this
+      // name outlived part of its line". Never a tint, never a badge colour.
+      if (thread.pinned) {
+        const atom = document.createElement("span");
+        atom.className = "tb-atom";
+        b.prepend(atom);
+        notes.push("pinned — membership frozen");
+      }
+      if (thread.broken) {
+        b.setAttribute("data-broken", "");
+        notes.push(
+          `BROKEN — lost ${thread.broken.missing.map((m) => m.title || m.id).join(", ")}`,
+        );
+      }
+      b.title = `${notes.join(" · ")} — select and frame this thread`;
       toggle(b, thread.id === activeThread);
       frag.appendChild(b);
     }

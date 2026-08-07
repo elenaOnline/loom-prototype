@@ -2,7 +2,7 @@
 //
 // A thread is an ordered run of node ids: a line of thought. Settled design says
 // first-class — nameable, editable, pullable, handable to an agent — so this
-// module has exactly four verbs and nothing else:
+// module has exactly five verbs and nothing else:
 //
 //   GRAB    click any trail edge → the whole connected run it belongs to is
 //           selected as ONE object (upstream to the root, downstream along the
@@ -16,14 +16,33 @@
 //   PULL    "t" gathers the thread's cards onto an even arc in trail order and
 //           moves NOTHING else. Pressing "t" again restores every card to where
 //           it was. A pull is a LENS, not a layout: reversible or it is a lie.
+//   PIN     "p" freezes a named thread's membership. An unpinned thread FOLLOWS
+//           ITS TIP (wave-2 §1): spawn from either end and the name comes with
+//           you. Pinning says "this line of thought is these cards" and stops
+//           that. Drawn as geometry — a filled atom on the nameplate and on the
+//           toolbar chip — never a tint.
 //   HAND    "c" types into the composer strip exactly what PowerSet would type:
 //           the thread name, then one ref per card in order, and under each ref
 //           the fibers that card carries — highlights as quoted lines, notes
 //           quoted with their written text inline (fibers.ts, stage 5).
+//
+// THREAD IDENTITY (wave-2 §1, replacing wave-1's exact-run equality). Two rules,
+// deliberately separate:
+//
+//   growth     is an EVENT — `model.growthForEdge` watches trail edges appear at
+//              a thread's ends and extends the membership. It never fires on a
+//              load, so a membership declared in a file is respected verbatim.
+//   resolution is a MATCH — `model.resolveThreadForRun` decides which stored
+//              thread a walked run just grabbed, by CONTAINMENT, not equality.
+//
+// And the invariant that keeps them from arguing: **a named thread's selection
+// is exactly its stored membership.** The walked run only decides *which*
+// thread you grabbed; it never silently becomes the thread.
 
 import type { Camera, Insets } from "./camera";
 import { boundsFrom, boundsOfRect } from "./camera";
 import type { Board, Change, LoomEdge, LoomNode, Thread } from "./model";
+import { growthForEdge, resolveThreadForRun, sameOrder } from "./model";
 import type { EdgeLayer } from "./edges";
 import type { Host } from "./host";
 import { refOf } from "./codec";
@@ -53,6 +72,8 @@ export interface ThreadLayer {
   /** the experimental gesture; toggles */
   togglePull(): void;
   pulled(): boolean;
+  /** freeze / unfreeze the selected named thread's membership */
+  togglePin(): void;
   /** true when a thread was selected and the handoff was written */
   handOff(): boolean;
   destroy(): void;
@@ -184,24 +205,51 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
       return;
     }
     const run = runFromEdge(edge);
-    // a run that exactly matches a named thread re-selects that thread, so
-    // grabbing by edge and picking from the list land on the same object
-    const named = board.threads().find((t) => sameRun(t.nodeIds, run));
-    selectRun(run, named?.id ?? null);
-    const name = named ? `"${named.name}"` : "unnamed";
-    status(`thread ${name} — ${run.length} cards · name it, t to pull, c to hand off`);
+    const named = resolveThreadForRun(board.threads(), run, edge);
+    if (!named) {
+      selectRun(run, null);
+      status(`thread unnamed — ${run.length} cards · name it, t to pull, c to hand off`);
+      return;
+    }
+    // THE INVARIANT: what gets selected is the thread's membership, not the run
+    // the walk happened to produce. A run that reaches past the thread (an
+    // agent's anchor note, a branch you also crossed) frames the thread; it is
+    // not absorbed by it.
+    selectRun(named.nodeIds, named.id);
+    status(describe(named, run));
   }
 
-  function sameRun(a: string[], b: string[]): boolean {
-    return a.length === b.length && a.every((id, i) => id === b[i]);
+  /** the one line the status strip says about a grabbed thread */
+  function describe(thread: Thread, run?: string[]): string {
+    const n = thread.nodeIds.length;
+    const bits = [`thread "${thread.name}" — ${n} card${n === 1 ? "" : "s"}`];
+    if (thread.pinned) bits.push("pinned · membership frozen");
+    if (thread.broken) bits.push(breakPhrase(thread));
+    if (run && run.length > n) bits.push(`the run reaches ${run.length - n} card(s) further`);
+    return bits.join(" · ");
+  }
+
+  function breakPhrase(thread: Thread): string {
+    const missing = thread.broken?.missing ?? [];
+    if (missing.length === 0) return "";
+    const names = missing.map((m) => m.title || m.id).join(", ");
+    return `BROKEN — lost ${names}`;
   }
 
   function selectThread(threadId: string, opts?: { zoom?: boolean }): void {
     const thread = board.thread(threadId);
     if (!thread) return;
+    if (thread.nodeIds.length === 0) {
+      // every card is gone but the NAME is not: wave 1 deleted the thread here,
+      // which is the loudest silent detach of all. It stays in the list, dashed,
+      // and says out loud what it lost.
+      setSelection(null);
+      status(`thread "${thread.name}" — ${breakPhrase(thread) || "no cards left"}`);
+      return;
+    }
     selectRun(thread.nodeIds, thread.id);
     if (opts?.zoom !== false) zoomToSelection();
-    status(`thread "${thread.name}" — ${thread.nodeIds.length} cards`);
+    status(describe(thread));
   }
 
   function zoomToSelection(): void {
@@ -274,7 +322,21 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
   const plateCount = document.createElement("span");
   plateCount.className = "thread-plate-count";
 
-  plate.append(nameInput, plateCount);
+  // Pin as GEOMETRY: an open 8px atom is "this thread still follows its tip",
+  // the same atom filled is "frozen". Same idiom as the edge layer's fork ring
+  // vs. return atom — no tint, no glow, nothing that needs a legend.
+  const pinAtom = document.createElement("button");
+  pinAtom.type = "button";
+  pinAtom.className = "thread-pin";
+  pinAtom.title = "p — freeze this thread's membership (pin)";
+
+  // the break: never hidden, never healed behind your back. Click acknowledges.
+  const breakEl = document.createElement("button");
+  breakEl.type = "button";
+  breakEl.className = "thread-break";
+  breakEl.hidden = true;
+
+  plate.append(pinAtom, nameInput, plateCount, breakEl);
   viewport.appendChild(plate);
 
   function currentThread(): Thread | undefined {
@@ -297,6 +359,26 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     if (document.activeElement !== nameInput) {
       nameInput.value = currentThread()?.name ?? "";
     }
+
+    const thread = currentThread();
+    if (thread?.pinned) pinAtom.setAttribute("data-pinned", "");
+    else pinAtom.removeAttribute("data-pinned");
+    // an un-named run has nothing to freeze: the atom recedes to a ghost outline
+    if (thread) pinAtom.removeAttribute("data-off");
+    else pinAtom.setAttribute("data-off", "");
+
+    const missing = thread?.broken?.missing ?? [];
+    breakEl.hidden = missing.length === 0;
+    if (missing.length > 0) {
+      breakEl.textContent = `${missing.length} lost`;
+      breakEl.title = `${missing
+        .map((m) => `"${m.title || m.id}" (was card ${m.index + 1})`)
+        .join(", ")} — click to acknowledge the break`;
+      plate.setAttribute("data-broken", "");
+    } else {
+      plate.removeAttribute("data-broken");
+    }
+
     positionPlate(root);
   }
 
@@ -325,8 +407,11 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
       return;
     }
     if (existing) {
+      // membership is NOT re-set from the selection here: the invariant says a
+      // named thread's selection already IS its membership, and re-setting it
+      // would let a rename quietly annex whatever the walk had reached (and
+      // would walk straight through a pin).
       board.renameThread(existing.id, name);
-      board.setThreadNodes(existing.id, selection.nodeIds);
       status(`thread renamed "${name}"`);
     } else {
       // naming is the moment a run is CAPTURED as an object; its root is its parent
@@ -341,6 +426,56 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     }
     nameInput.blur();
   }
+
+  // ---- pin ----------------------------------------------------------------
+  // The freeze. An unpinned thread tracks its tip, which is what makes a name
+  // stay with a growing line of thought; pinning is how you say "no, THIS is
+  // the thread" and take a snapshot. Reversible on purpose (ideation §7 meta-
+  // rule: candidates stay toggleable) — unpinning hands the thread back to its
+  // tip from wherever the trail has got to since.
+
+  function togglePin(): void {
+    const thread = currentThread();
+    if (!thread) {
+      status(
+        selection
+          ? "name this run before pinning it — a pin freezes a NAME's membership"
+          : "no thread selected — click one of its edges first",
+      );
+      return;
+    }
+    const next = !thread.pinned;
+    board.setThreadPinned(thread.id, next);
+    const n = thread.nodeIds.length;
+    status(
+      next
+        ? `thread "${thread.name}" pinned — ${n} card${n === 1 ? "" : "s"}, frozen`
+        : `thread "${thread.name}" unpinned — it follows its tip again`,
+    );
+  }
+
+  function mend(): void {
+    const thread = currentThread();
+    if (!thread?.broken) return;
+    const lost = thread.broken.missing.length;
+    board.mendThread(thread.id);
+    const n = thread.nodeIds.length;
+    status(`break acknowledged — "${thread.name}" is ${n} card${n === 1 ? "" : "s"} (lost ${lost})`);
+  }
+
+  pinAtom.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    pinAtom.blur();
+    togglePin();
+  });
+
+  breakEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    breakEl.blur();
+    mend();
+  });
 
   nameInput.addEventListener("keydown", (e) => {
     e.stopPropagation();
@@ -367,12 +502,20 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
   const stashes = new Map<string, Map<string, Spot>>();
   let raf = 0;
 
-  function runKey(nodeIds: string[]): string {
-    return nodeIds.join("|");
+  /**
+   * A named thread is keyed by its IDENTITY, not by its membership: a thread
+   * that follows its tip while pulled would otherwise change key mid-pull and
+   * strand the stash, making the pull irreversible — the exact failure wave 1
+   * already logs for reloads. An unnamed run has nothing but its membership to
+   * be keyed by. (Stage 3 persists this stash; keying by thread id is also the
+   * only form of it that can survive a reload.)
+   */
+  function stashKey(sel: ThreadSelection): string {
+    return sel.threadId ?? `run:${sel.nodeIds.join("|")}`;
   }
 
   function pulled(): boolean {
-    return selection !== null && stashes.has(runKey(selection.nodeIds));
+    return selection !== null && stashes.has(stashKey(selection));
   }
 
   function spotsNow(nodeIds: string[]): Map<string, Spot> {
@@ -472,7 +615,7 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
       status("no thread selected — click one of its edges first");
       return;
     }
-    const key = runKey(selection.nodeIds);
+    const key = stashKey(selection);
     const stashed = stashes.get(key);
     if (stashed) {
       stashes.delete(key);
@@ -502,8 +645,17 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
       .filter((n): n is LoomNode => n !== undefined);
     if (nodes.length === 0) return false;
 
-    const name = currentThread()?.name ?? "unnamed thread";
-    host.sendToComposer(`thread: ${name} (${nodes.length} card${nodes.length === 1 ? "" : "s"})`);
+    const thread = currentThread();
+    const name = thread?.name ?? "unnamed thread";
+    const frozen = thread?.pinned ? " · pinned" : "";
+    host.sendToComposer(
+      `thread: ${name} (${nodes.length} card${nodes.length === 1 ? "" : "s"})${frozen}`,
+    );
+    // a broken thread hands off broken: the agent on the other end is told what
+    // the line lost rather than being handed a shorter line as if it were whole
+    for (const lost of thread?.broken?.missing ?? []) {
+      host.sendToComposer(`    (missing: ${lost.title || lost.id} — was card ${lost.index + 1})`);
+    }
     let marks = 0;
     for (const node of nodes) {
       host.sendToComposer(refOf(node));
@@ -557,6 +709,11 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
       togglePull();
       return;
     }
+    if (e.key === "p" || e.key === "P") {
+      e.preventDefault();
+      togglePin();
+      return;
+    }
     if (e.key === "n" || e.key === "N") {
       if (!selection) return;
       e.preventDefault();
@@ -575,10 +732,44 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     if (root) positionPlate(root);
   });
 
+  /**
+   * TIP-TRACKING, applied. The rule itself is `model.growthForEdge` (a pure
+   * statement about the graph, like `branchStartEdgeIds`); this is the one
+   * place that acts on it. It runs whether or not anything is selected — a
+   * thread grows because its trail grew, not because you were watching.
+   *
+   * It fires ONLY on edges the board has just gained. That is deliberate and
+   * load-bearing: a `load()` emits `reset`, never `graph`, so opening a file
+   * can never rewrite a membership the file declared.
+   */
+  function applyGrowth(edgeIds: string[] | undefined): void {
+    if (!edgeIds || edgeIds.length === 0) return;
+    for (const id of edgeIds) {
+      const edge = board.edge(id);
+      if (!edge) continue; // this id is a REMOVAL, not an addition
+      for (const grown of growthForEdge(board.threads(), board.edges(), edge)) {
+        board.setThreadNodes(grown.threadId, grown.nodeIds);
+        const thread = board.thread(grown.threadId);
+        if (!thread) continue;
+        const where = grown.end === "tip" ? "followed its tip" : "grew from its root";
+        status(`thread "${thread.name}" ${where} — ${thread.nodeIds.length} cards`);
+      }
+    }
+  }
+
   const unsubscribe = board.onChange((change: Change) => {
+    if (change.kind === "graph") applyGrowth(change.edgeIds);
     if (!selection) return;
     if (change.kind === "reset") {
       setSelection(null);
+      return;
+    }
+    // the selected thread grew (or was edited) under the selection: re-select it
+    // so the invariant holds — a named thread's selection IS its membership
+    const thread = currentThread();
+    if (thread && !sameOrder(thread.nodeIds, selection.nodeIds)) {
+      if (thread.nodeIds.length === 0) setSelection(null);
+      else selectRun(thread.nodeIds, thread.id);
       return;
     }
     // a placement can vanish under a selection (unpin); drop it from the run
@@ -597,6 +788,7 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     clear,
     togglePull,
     pulled,
+    togglePin,
     handOff,
     destroy() {
       if (raf !== 0) cancelAnimationFrame(raf);
