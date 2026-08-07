@@ -19,6 +19,7 @@
 import type { Camera, Insets } from "./camera";
 import type { Board, LoomNode, NodeKind, ProvSeed } from "./model";
 import { DEFAULT_CARD_H, DEFAULT_CARD_W } from "./model";
+import { freeSpotNear } from "./arrange";
 import { LINK_REF_ATTR, LINK_ROLE_ATTR } from "./providers/source";
 import type { ContentSource } from "./providers/source";
 
@@ -121,37 +122,21 @@ export function createTrail(options: TrailOptions): Trail {
 
   // ---- placement ----------------------------------------------------------
 
-  function overlaps(x: number, y: number, w: number, h: number): boolean {
-    const pad = 12;
-    for (const n of board.nodes()) {
-      if (
-        x < n.x + n.width + pad &&
-        x + w + pad > n.x &&
-        y < n.y + n.height + pad &&
-        y + h + pad > n.y
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   /**
    * Bloom near the source: right edge + GAP, staggered down-then-up until a
    * free slot appears, stepping into a further column only when the first is
    * genuinely full. No drag-to-place ceremony (brief Q3 is exactly this
    * default, put on the table to be felt).
+   *
+   * The search itself moved to `arrange.freeSpotNear` in wave-2 §4 — a facet
+   * blooms beside its source by the same reading of "beside", and two copies of
+   * it would have drifted. Only the "everything is full" answer is local: a
+   * spawn jitters and overlaps rather than refusing to happen.
    */
   function placeNear(src: LoomNode, w: number, h: number): { x: number; y: number } {
+    const found = freeSpotNear(board.nodes(), src, w, h, { gap: GAP, stagger: STAGGER });
+    if (found) return found;
     const step = h + STAGGER;
-    for (let col = 0; col < 4; col += 1) {
-      const x = src.x + src.width + GAP + col * (w + GAP);
-      for (let i = 0; i < 12; i += 1) {
-        const rung = Math.ceil(i / 2) * (i % 2 === 1 ? 1 : -1); // 0, +1, -1, +2, …
-        const y = src.y + rung * step;
-        if (!overlaps(x, y, w, h)) return { x, y };
-      }
-    }
     return { x: src.x + src.width + GAP, y: src.y + (Math.random() * 2 - 1) * step };
   }
 

@@ -46,7 +46,7 @@ import type { Board, Change, GlyphStamp, LoomNode, Mark } from "./model";
 import { GLYPH_PALETTE, glyphChar } from "./model";
 import type { Host } from "./host";
 import { refOf } from "./codec";
-import { collapse, unwrapAll, wrapQuote } from "./quotes";
+import { collapse, elide, unwrapAll, wrapQuote } from "./quotes";
 
 /** world px: a note is a small thing beside a big one */
 const NOTE_W = 200;
@@ -57,8 +57,6 @@ const NOTE_GAP = 40;
 const PILL_LIFT = 8;
 /** anything shorter is a stray click-drag, not a quote */
 const MIN_QUOTE = 2;
-/** the status line quotes back what you kept; it is a strip, not a page */
-const ECHO = 48;
 
 export interface FiberLayer {
   /** re-draw the marks on one card (or all of them) */
@@ -71,8 +69,12 @@ export interface FiberLayerOptions {
   camera: Camera;
   viewport: HTMLElement;
   host: Host;
-  /** the card layer owns card DOM; this module only decorates its bodies */
-  getCardEl: (nodeId: string) => HTMLElement | undefined;
+  /**
+   * EVERY placement of the card, because a mark belongs to the card and must be
+   * drawn in all of its windows (wave-2 §4). The card layer owns card DOM; this
+   * module only decorates its bodies.
+   */
+  getCardEls: (nodeId: string) => HTMLElement[];
   getInsets?: () => Partial<Insets>;
   onStatus?: (text: string) => void;
 }
@@ -360,7 +362,7 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     board.addMark({ nodeId: g.nodeId, quote: g.quote, kind: "highlight" });
     dismiss(true);
     apply(g.nodeId);
-    status(`highlighted "${echo(g.quote)}"`);
+    status(`highlighted "${elide(g.quote)}"`);
   }
 
   function onNote(): void {
@@ -377,7 +379,7 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     const note = board.addNode({
       kind: "note",
       ref: "",
-      title: echo(g.quote),
+      title: elide(g.quote),
       x: spot.x,
       y: spot.y,
       width: NOTE_W,
@@ -397,9 +399,9 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
 
     // the card layer built this element synchronously on the graph change, so
     // the note is ready to be typed into the moment it appears
-    const body = options.getCardEl(note.id)?.querySelector<HTMLElement>(".card-body");
+    const body = options.getCardEls(note.id)[0]?.querySelector<HTMLElement>(".card-body");
     body?.focus({ preventScroll: true });
-    status(`note on "${echo(g.quote)}" — type it`);
+    status(`note on "${elide(g.quote)}" — type it`);
   }
 
   /**
@@ -428,15 +430,24 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     status(`${glyphChar(glyph)} ${glyph} — ${n} passage${n === 1 ? "" : "s"} · marks/${glyph}.md`);
   }
 
+  /**
+   * A send is keyed by the quote it is about, so sending the same passage twice
+   * collapses to `×2` rather than typing it twice (critique-ledger item 7), and
+   * the quote goes at pill length with its full text still in the board file.
+   */
   function onSend(): void {
     const g = grab;
     if (!g) return;
     const node = board.node(g.nodeId);
     if (!node) return;
-    host.sendToComposer(`> ${g.quote}`);
-    host.sendToComposer(`    from ${refOf(node)}`);
+    const result = host.sendBlock(`fiber:${board.contentRoot(g.nodeId)}:${g.quote}`, [
+      `> ${elide(g.quote)}`,
+      `    from ${refOf(node)}`,
+    ]);
     dismiss(true);
-    status(`sent to composer: "${echo(g.quote)}"`);
+    status(
+      `sent to composer: "${elide(g.quote)}"${result === "collapsed" ? " (already there — ×n)" : ""}`,
+    );
   }
 
   /**
@@ -510,13 +521,15 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
       for (const n of board.nodes()) apply(n.id);
       return;
     }
-    const el = options.getCardEl(nodeId);
-    const body = el?.querySelector<HTMLElement>(".card-body");
-    if (!body || body.isContentEditable) return;
-    unwrapAll(body, ".fiber-mark");
     const marks = board.marksOf(nodeId);
-    if (marks.length === 0) return;
-    for (const mark of marks) draw(body, mark);
+    // one card, every window on it: this is where "highlight in one facet, see
+    // it in both" actually happens on the DOM side
+    for (const el of options.getCardEls(nodeId)) {
+      const body = el.querySelector<HTMLElement>(".card-body");
+      if (!body || body.isContentEditable) continue;
+      unwrapAll(body, ".fiber-mark");
+      for (const mark of marks) draw(body, mark);
+    }
   }
 
   /**
@@ -554,6 +567,8 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
       change.kind === "meta" ||
       change.kind === "threads" ||
       change.kind === "arrange" ||
+      // a placement scrolled to its own heading; the marks in it are untouched
+      change.kind === "view" ||
       // a glyph stamp never removes a fiber span (glyphs.ts unwraps only its
       // own class), so re-wrapping every body on a stamp would be pure churn
       change.kind === "glyphs"
@@ -588,14 +603,12 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
       unwatchCamera();
       unsubscribe();
       for (const n of board.nodes()) {
-        const body = options.getCardEl(n.id)?.querySelector<HTMLElement>(".card-body");
-        if (body) unwrapAll(body, ".fiber-mark");
+        for (const el of options.getCardEls(n.id)) {
+          const body = el.querySelector<HTMLElement>(".card-body");
+          if (body) unwrapAll(body, ".fiber-mark");
+        }
       }
       pill.remove();
     },
   };
-}
-
-function echo(quote: string): string {
-  return quote.length > ECHO ? `${quote.slice(0, ECHO - 1)}…` : quote;
 }

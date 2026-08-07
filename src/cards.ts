@@ -1,12 +1,19 @@
 // cards.ts — model → DOM. Real elements, real text (fibers will need selection).
 //
-// A card is: a title bar (serif title + mono kind/path line + an unpin control)
-// and a body of sanitized provider HTML. The title bar is the drag handle, so
-// dragging never fights text selection in the body. Alt-drag anywhere on a card
-// pulls a manual edge to another card.
+// A card is: a title bar (serif title + mono kind/path line + up to three
+// controls) and a body of sanitized provider HTML. The title bar is the drag
+// handle, so dragging never fights text selection in the body. Alt-drag anywhere
+// on a card pulls a manual edge to another card, and a corner grip resizes it
+// (grid-free, `sizeNode`'s own floor is the only limit).
 //
 // The unpin control removes the PLACEMENT, not the thing: the card leaves the
-// cloth, the article still exists and can be re-spawned.
+// cloth, the article still exists and can be re-spawned — and since wave-2 §4 a
+// card can have SEVERAL placements, so unpinning one facet leaves the others,
+// their marks and their edges exactly where they were (`model.removeNode`).
+//
+// The two other head controls (`≡` outline, `⊞` split a facet) are BUILT here
+// because they are card chrome, and HANDLED in facets.ts by delegation — this
+// module knows what a card looks like, not what an outline is.
 //
 // One card kind is written rather than fetched: a `note` body is contenteditable
 // and types straight through to the model, so a note fibers.ts just created can
@@ -23,6 +30,13 @@ export interface CardLayer {
   /** brief inversion of a card's title bar — "your click landed *here*" */
   ping(id: string): void;
   element(id: string): HTMLElement | undefined;
+  /**
+   * EVERY placement of the card this id belongs to (wave-2 §4). Decorating
+   * layers (fibers, glyphs) draw per CARD, so they ask for all its windows —
+   * that is the whole of "highlight in one facet, see it in both" on the DOM
+   * side, exactly as `board.marksOf` is on the model side.
+   */
+  elements(id: string): HTMLElement[];
   destroy(): void;
 }
 
@@ -62,6 +76,8 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
       // narrow the work: an edge appearing must not re-render every body (it
       // would eat scroll position and text selection on 40 cards at once)
       const kind = change?.kind ?? "reset";
+      // a placement's own scroll anchor moved; nothing about the card did
+      if (kind === "view") continue;
       if (kind === "graph") continue;
       const ids = change?.nodeIds;
       if (ids && !ids.includes(node.id)) continue;
@@ -95,13 +111,35 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     kind.className = "card-kind";
     stack.append(title, kind);
 
+    const controls = document.createElement("span");
+    controls.className = "card-controls";
+
+    // the outline is a reading affordance, so it exists only where there is an
+    // article to have headings — a note is its own outline
+    if (node.kind !== "note") {
+      const outline = document.createElement("button");
+      outline.className = "card-outline-btn";
+      outline.type = "button";
+      outline.title = "o — headings · click one to scroll there, alt-click to split a facet at it";
+      outline.textContent = "≡";
+      controls.appendChild(outline);
+    }
+
+    const facet = document.createElement("button");
+    facet.className = "card-facet-btn";
+    facet.type = "button";
+    facet.title = "s — split a facet: a second window on this same card";
+    facet.textContent = "⊞";
+    controls.appendChild(facet);
+
     const close = document.createElement("button");
     close.className = "card-unpin";
     close.type = "button";
     close.title = "unpin this placement (the article stays out there)";
     close.textContent = "×";
+    controls.appendChild(close);
 
-    head.append(stack, close);
+    head.append(stack, controls);
 
     const body = document.createElement("div");
     body.className = "card-body";
@@ -112,7 +150,14 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     // be overwritten. It stays readable and stays read-only (wave-2 §2).
     if (node.kind === "note" && node.glyphFile === undefined) makeEditable(body);
 
-    el.append(head, body);
+    // the resize grip: two hairlines in the corner, grid-free (critique-ledger
+    // item 4). It is a corner of the SHEET, not a widget — no handle box, no
+    // shadow, and it counter-scales so it stays grabbable at any zoom.
+    const grip = document.createElement("div");
+    grip.className = "card-grip";
+    grip.title = "drag to resize this placement";
+
+    el.append(head, body, grip);
     return el;
   }
 
@@ -211,6 +256,7 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
 
   type Drag =
     | { kind: "move"; id: string; pointer: number; startX: number; startY: number; originX: number; originY: number }
+    | { kind: "size"; id: string; pointer: number; startX: number; startY: number; originW: number; originH: number }
     | { kind: "edge"; id: string; pointer: number; moved: boolean };
 
   let drag: Drag | null = null;
@@ -230,7 +276,32 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     raise(el);
     select(id);
 
-    if (e.target instanceof Element && e.target.closest(".card-unpin")) return;
+    // the head controls are buttons, not drag handles: let the click through
+    if (
+      e.target instanceof Element &&
+      e.target.closest(".card-unpin, .card-facet-btn, .card-outline-btn, .card-outline")
+    ) {
+      return;
+    }
+
+    if (e.target instanceof Element && e.target.closest(".card-grip")) {
+      const node = board.node(id);
+      if (!node) return;
+      drag = {
+        kind: "size",
+        id,
+        pointer: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        originW: node.width,
+        originH: node.height,
+      };
+      el.setPointerCapture(e.pointerId);
+      el.setAttribute("data-sizing", "");
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
 
     if (e.altKey) {
       drag = { kind: "edge", id, pointer: e.pointerId, moved: false };
@@ -269,6 +340,17 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
       );
       return;
     }
+    if (drag.kind === "size") {
+      // grid-free on purpose: a card is a sheet of paper, not a cell. The floor
+      // is model.sizeNode's own (120×80) — below that the head has no measure.
+      const z = camera.z || 1;
+      board.sizeNode(
+        drag.id,
+        Math.round(drag.originW + (e.clientX - drag.startX) / z),
+        Math.round(drag.originH + (e.clientY - drag.startY) / z),
+      );
+      return;
+    }
     const from = board.node(drag.id);
     if (!from) return;
     drag.moved = true;
@@ -283,8 +365,9 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     const el = els.get(current.id);
     if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
     el?.removeAttribute("data-dragging");
+    el?.removeAttribute("data-sizing");
 
-    if (current.kind === "move") return;
+    if (current.kind === "move" || current.kind === "size") return;
 
     edges.hidePending();
     if (!current.moved) return;
@@ -351,6 +434,14 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     select,
     ping,
     element: (id) => els.get(id),
+    elements(id) {
+      const out: HTMLElement[] = [];
+      for (const n of board.placementsOf(id)) {
+        const el = els.get(n.id);
+        if (el) out.push(el);
+      }
+      return out;
+    },
     destroy() {
       unsubscribe();
       container.removeEventListener("pointerdown", onPointerDown);

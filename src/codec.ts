@@ -36,6 +36,7 @@ import {
   PROV_HOW,
   TOPOLOGY_MODES,
   backfillProv,
+  fallbackTitle,
   freshId,
 } from "./model";
 import type { Host } from "./host";
@@ -54,7 +55,15 @@ type Json = Record<string, unknown>;
 // file that states them keeps its own.
 
 const NODE_BASE_KEYS = ["id", "type", "x", "y", "width", "height", "x-powerset"];
-const NODE_EXT_KEYS = new Set(["kind", "title", "ref", "glyphFile", "prov"]);
+const NODE_EXT_KEYS = new Set([
+  "kind",
+  "title",
+  "ref",
+  "glyphFile",
+  "facetOf",
+  "viewAnchor",
+  "prov",
+]);
 const EDGE_BASE_KEYS = new Set(["id", "fromNode", "toNode", "label", "x-powerset"]);
 const EDGE_EXT_KEYS = new Set(["kind", "prov"]);
 const THREAD_KEYS = new Set(["id", "name", "nodeIds", "pinned", "broken", "prov"]);
@@ -142,6 +151,10 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
       // written only when the card IS a glyph file's window (wave-2 §2), so an
       // ordinary note's entry keeps the shape every earlier wave wrote
       ...(n.glyphFile === undefined ? {} : { glyphFile: n.glyphFile }),
+      // …and the same discipline for a facet (wave-2 §4): a board with one
+      // placement per card is byte-identical to what wave 1 wrote
+      ...(n.facetOf === undefined ? {} : { facetOf: n.facetOf }),
+      ...(n.viewAnchor === undefined ? {} : { viewAnchor: n.viewAnchor }),
       prov: provOut(n.prov),
     };
     replay(ext, n.foreign?.ext);
@@ -337,7 +350,11 @@ function readNode(raw: unknown): LoomNode | null {
   const url = str(raw["url"]);
   const file = str(raw["file"]);
   const ref = str(ext["ref"]) ?? (kind === "doc" ? (file ?? "") : titleFromUrl(url));
-  const title = str(ext["title"]) ?? fallbackTitle(kind, ref, str(raw["text"]));
+  // P0 convention gap #2: an EMPTY title is not a missing one, and `??` never
+  // fired on `"title": ""` — so four agent-written note cards captioned
+  // themselves "untitled" at every altitude. Blank is treated as absent here,
+  // and `model.makeNode` closes the same hole on the creation side.
+  const title = str(ext["title"])?.trim() || fallbackTitle(kind, ref, str(raw["text"]));
 
   const x = num(raw["x"]) ?? 0;
   const y = num(raw["y"]) ?? 0;
@@ -359,6 +376,12 @@ function readNode(raw: unknown): LoomNode | null {
   if (kind === "note" && text !== undefined) node.text = text;
   const glyphFile = str(ext["glyphFile"]);
   if (glyphFile !== undefined) node.glyphFile = glyphFile;
+  // liberal: `facetOf` is validated against the board (and flattened) by
+  // `board.load`, which is the only place that knows which nodes actually exist
+  const facetOf = str(ext["facetOf"]);
+  if (facetOf !== undefined && facetOf !== node.id) node.facetOf = facetOf;
+  const viewAnchor = str(ext["viewAnchor"])?.trim();
+  if (viewAnchor) node.viewAnchor = viewAnchor;
   const foreign = foreignOf(raw, nodeOwnedKeys(kind), ext, NODE_EXT_KEYS);
   if (foreign) node.foreign = foreign;
   return node;
@@ -609,16 +632,6 @@ function titleFromUrl(url: string | undefined): string {
   } catch {
     return slug.replace(/_/g, " ");
   }
-}
-
-function fallbackTitle(kind: NodeKind, ref: string, text: string | undefined): string {
-  if (kind === "note") {
-    const first = (text ?? "").split("\n", 1)[0] ?? "";
-    return first.slice(0, 60) || "note";
-  }
-  if (!ref) return "untitled";
-  const tail = ref.split("/").pop() ?? ref;
-  return tail.replace(/\.(md|markdown|txt)$/i, "");
 }
 
 function isObject(v: unknown): v is Json {

@@ -194,7 +194,19 @@ body {
 
 .card[data-status="error"] .card-kind { color: var(--sig); }
 
-.card-unpin {
+/* the head's controls: outline · split a facet · unpin. One row of mono glyphs,
+   each a hairline box that only draws its box on hover — chrome that is quiet
+   until you reach for it. */
+.card-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.card-unpin,
+.card-facet-btn,
+.card-outline-btn {
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1;
@@ -206,7 +218,86 @@ body {
   cursor: pointer;
 }
 
-.card-unpin:hover { color: var(--ink); border-color: var(--ink); }
+.card-unpin:hover,
+.card-facet-btn:hover,
+.card-outline-btn:hover { color: var(--ink); border-color: var(--ink); }
+
+/* an outline you cannot fill is not offered: facets.ts writes data-headings
+   only once the body has actually rendered some */
+.card:not([data-headings]) .card-outline-btn { display: none; }
+
+.card[data-outline] .card-outline-btn { color: var(--paper); background: var(--ink); }
+
+/* THE OUTLINE (wave-2 §4). A headings list read out of the body's own DOM,
+   between the head and the prose: click to scroll this window there, alt-click
+   to split a facet already parked there. Indent is the only hierarchy — no
+   rules, no bullets, no disclosure triangles. */
+.card-outline {
+  flex: none;
+  max-height: 42%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid var(--ink);
+  border-bottom-width: calc(1px / var(--z, 1));
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.card-outline-entry {
+  display: block;
+  width: 100%;
+  padding: 1px 3px;
+  padding-left: calc(3px + var(--lvl, 0) * 0.75rem);
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--s2);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid transparent;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-outline-entry:hover { color: var(--paper); background: var(--ink); }
+
+/* where this window is parked: a baseline rule, not a highlight */
+.card-outline-entry[data-parked] {
+  color: var(--ink);
+  border-left-color: var(--ink);
+}
+
+/* THE FACET MARKER (wave-2 §4). Written by CSS off `data-facet="2/3"` rather
+   than as a text node — the kind line is head chrome, but keeping every
+   decorator text-free is the house rule both mark species depend on. */
+.card[data-facet] .card-kind::after {
+  content: " · facet " var(--facet, "");
+  color: var(--s2);
+}
+
+/* THE RESIZE GRIP (critique-ledger item 4). Two hairlines in the corner of the
+   sheet — no handle box, no shadow, no grid: a card is paper you can cut to
+   size. Counter-scaled so the target stays grabbable at any zoom. */
+.card-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: calc(14px / var(--z, 1));
+  height: calc(14px / var(--z, 1));
+  cursor: nwse-resize;
+  /* the two strokes: a right rule and a bottom rule meeting at the corner */
+  border-right: 1px solid var(--ghost);
+  border-bottom: 1px solid var(--ghost);
+  border-width: calc(1px / var(--z, 1));
+}
+
+.card-grip:hover,
+.card[data-sizing] .card-grip { border-color: var(--ink); }
 
 /* selection and ping are inversions, never glows */
 .card[data-selected] .card-head,
@@ -219,13 +310,20 @@ body {
 .card[data-selected] .card-kind,
 .card[data-ping] .card-kind,
 .card[data-thread="in"] .card-kind,
-.card[data-selected] .card-unpin,
-.card[data-ping] .card-unpin,
-.card[data-thread="in"] .card-unpin { color: var(--ghost); }
+.card[data-selected] .card-controls button,
+.card[data-ping] .card-controls button,
+.card[data-thread="in"] .card-controls button { color: var(--ghost); }
 
-.card[data-selected] .card-unpin:hover,
-.card[data-ping] .card-unpin:hover,
-.card[data-thread="in"] .card-unpin:hover { color: var(--paper); border-color: var(--paper); }
+.card[data-selected] .card-kind::after,
+.card[data-ping] .card-kind::after,
+.card[data-thread="in"] .card-kind::after { color: var(--ghost); }
+
+.card[data-selected] .card-controls button:hover,
+.card[data-ping] .card-controls button:hover,
+.card[data-thread="in"] .card-controls button:hover {
+  color: var(--paper);
+  border-color: var(--paper);
+}
 
 /* off-thread cards recede to the back of the cloth — still readable, not loud */
 .card[data-thread="out"] {
@@ -360,19 +458,45 @@ body {
 .card-marks { display: none; }
 
 /* --------------------------------------------------------------- fibers --- */
-/* A mark is geometry, never a wash: a signal hairline under the words that
-   were kept. Highlights are solid, note anchors are dashed — the dash says
-   "there is a card on the other end of this". */
+/* A mark is geometry, never a wash: a signal RULE under the words that were
+   kept, and the words themselves left exactly as they were. Highlights are
+   solid, note anchors are dashed — the dash says "there is a card on the other
+   end of this".
+ *
+ * READABILITY PASS (wave-2 §4, critique-ledger item 4). The reading surface is
+ * sacred: a highlighted passage is pure ink on pure paper, at full contrast, at
+ * the same size and weight as the prose around it. Nothing tints it, nothing
+ * lightens it, nothing bolds it. Three things changed and each is geometry:
+ *
+ *   1. the rule is 2px, not 1px. A hairline under 13.5px serif at z<1 was
+ *      sub-pixel and reads as an artifact of the font rather than as a mark;
+ *      doubling it makes the kept passage unmistakable WITHOUT touching a
+ *      single pixel of the text.
+ *   2. one rule, not two. A quote inside a link used to carry the link's own
+ *      ghost hairline AND the mark's signal rule, half a pixel apart, which
+ *      muddled exactly the words it was supposed to pick out. The anchor's rule
+ *      steps aside under a mark; the link is still a link (it still inverts on
+ *      hover) and the mark is now the only line under those words.
+ *   3. every receded state covers marks too. A card pushed to the back by a
+ *      thread OR a glyph selection now takes its marks back with it — before,
+ *      an off-selection card's --sig underline stayed louder than its own prose,
+ *      which is a contrast inversion: the quiet thing shouting. */
 
 .fiber-mark {
-  border-bottom: 1px solid var(--sig);
+  border-bottom: 2px solid var(--sig);
+  /* the rule sits under the descenders rather than through them */
+  padding-bottom: 0.5px;
 }
 
 .fiber-mark[data-kind="note"] {
   border-bottom-style: dashed;
 }
 
-.card[data-thread="out"] .fiber-mark { border-bottom-color: var(--s2); }
+/* one rule under a marked link, not two */
+.card-body a:has(.fiber-mark) { border-bottom-color: transparent; }
+
+.card[data-thread="out"] .fiber-mark,
+.card[data-glyphsel="out"] .fiber-mark { border-bottom-color: var(--s2); }
 
 /* a note is written, not fetched: mono body, editable, no chrome of its own */
 .card[data-kind="note"] .card-body {
@@ -592,13 +716,16 @@ body {
 /* full band, off-screen: the prose exists but is not laid out or painted.
    Only bodies are dropped — the card's box and title stay, so the cloth keeps
    its shape and edges keep their anchors. */
-.card-culled .card-body { display: none; }
+.card-culled .card-body,
+.card-culled .card-outline { display: none; }
 
 /* --- title-card (thread) — the sheet stays, only its name is written --- */
 
-.card.tier-title .card-body { display: none; }
+.card.tier-title .card-body,
+.card.tier-title .card-outline { display: none; }
 /* curating happens at reading range; at this altitude you are navigating */
-.card.tier-title .card-unpin { display: none; }
+.card.tier-title .card-controls,
+.card.tier-title .card-grip { display: none; }
 
 .card.tier-title .card-head {
   flex: 1 1 auto;
@@ -659,8 +786,10 @@ body {
 }
 
 .card.tier-glyph .card-body,
+.card.tier-glyph .card-outline,
 .card.tier-glyph .card-kind,
-.card.tier-glyph .card-unpin { display: none; }
+.card.tier-glyph .card-grip,
+.card.tier-glyph .card-controls { display: none; }
 
 /* the head IS the glyph: a hairline square, screen-constant, centred on the
    footprint so the edge layer's point anchors land inside it. It is still the
@@ -1002,6 +1131,17 @@ body {
 }
 
 .composer-line { line-height: 1.5; }
+
+/* A HANDOFF IS ONE OBJECT (wave-2 §4, critique-ledger item 7). A block is the
+   whole of one handoff; re-sending it replaces or collapses it rather than
+   appending a duplicate. The only visible chrome is the repeat count — a block
+   still reads as exactly the lines that would be typed. */
+.composer-block { display: block; }
+
+.composer-repeat {
+  font-variant-numeric: tabular-nums;
+  color: var(--s2);
+}
 
 #composer:empty::before {
   content: "composer — thread and fiber handoffs will be typed here";

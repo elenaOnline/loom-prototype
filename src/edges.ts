@@ -89,19 +89,61 @@ export function createEdgeLayer(svg: SVGSVGElement, board: Board): EdgeLayer {
     });
   }
 
+  /**
+   * AN EDGE BINDS TO THE CARD; IT DRAWS TO THE NEAREST PLACEMENT (wave-2 §4).
+   *
+   * Edge endpoints are card ids (model canonicalizes them), so a card with three
+   * facets still has exactly the edges it walked. At draw time each end picks the
+   * placement of its card that is closest to the other end, so a trail attaches
+   * to the window you are actually reading rather than always to the first one.
+   *
+   * The consequence to feel, logged rather than hidden: moving a facet can now
+   * change which placement a trail edge lands on, so the weave's shape answers
+   * to where the windows are. The alternative (one edge per facet) multiplies
+   * the weave every time a card is opened twice, which is worse.
+   */
+  function nearestPair(a: LoomNode[], b: LoomNode[]): [LoomNode, LoomNode] | null {
+    let best: [LoomNode, LoomNode] | null = null;
+    let bestD = Infinity;
+    for (const na of a) {
+      const ca = center(rect(na));
+      for (const nb of b) {
+        const cb = center(rect(nb));
+        const d = (ca.x - cb.x) ** 2 + (ca.y - cb.y) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = [na, nb];
+        }
+      }
+    }
+    return best;
+  }
+
   function draw(): void {
     const nodes = board.nodes();
     resize(nodes);
     const byId = new Map(nodes.map((n) => [n.id, n]));
+    // one pass to group placements by card, so the nearest-pair lookup below is
+    // a couple of comparisons and not a board query per edge
+    const family = new Map<string, LoomNode[]>();
+    for (const n of nodes) {
+      const root = board.contentRoot(n.id);
+      const list = family.get(root);
+      if (list) list.push(n);
+      else family.set(root, [n]);
+    }
     const frag = document.createDocumentFragment();
     // the second and later children of a card are branch starts; marked at the
     // FORK (source side), where a filled return atom marks the LANDING
     const branches = branchStartEdgeIds(board.edges());
 
     for (const e of board.edges()) {
-      const from = byId.get(e.from);
-      const to = byId.get(e.to);
-      if (!from || !to) continue;
+      const head = byId.get(e.from);
+      const tail = byId.get(e.to);
+      if (!head || !tail) continue;
+      const pair = nearestPair(family.get(e.from) ?? [head], family.get(e.to) ?? [tail]);
+      const from = pair?.[0] ?? head;
+      const to = pair?.[1] ?? tail;
       // stable ±1 so A→B and B→A bow to opposite sides instead of superimposing
       const d = geometry(e.kind, shape(from), shape(to), e.from < e.to ? 1 : -1);
       const emphasis = classify?.(e.id) ?? null;
@@ -191,7 +233,9 @@ export function createEdgeLayer(svg: SVGSVGElement, board: Board): EdgeLayer {
       change.kind === "marks" ||
       // a restore point being taken or spent moves no card; the moves it causes
       // arrive separately as `position`
-      change.kind === "arrange"
+      change.kind === "arrange" ||
+      // a placement scrolled inside itself; no card moved
+      change.kind === "view"
     ) {
       return;
     }

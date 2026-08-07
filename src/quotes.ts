@@ -27,6 +27,25 @@ export function collapse(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * PILL LENGTH (wave-2 §4, critique-ledger item 7). The composer strip is a
+ * strip: a handoff that pastes six 400-character Wikipedia sentences into it is
+ * unreadable, and the full text is already kept in two better places (the board
+ * file and `marks/<glyph>.md`). So every quote the chrome echoes — the status
+ * line, a note's title, a handoff — is elided to the same length, and the
+ * ellipsis is the honest signal that there is more where that came from.
+ */
+export const ECHO = 48;
+
+export function elide(text: string, max = ECHO): string {
+  const one = collapse(text);
+  if (one.length <= max) return one;
+  // break on a word boundary when there is one near the end, else hard-cut
+  const cut = one.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${space > max * 0.6 ? cut.slice(0, space) : cut}…`;
+}
+
 interface Slot {
   node: Text;
   offset: number;

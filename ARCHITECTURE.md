@@ -62,7 +62,15 @@ sessions compose instead of churning. Deviate only with a dated note added at th
 - `src/quotes.ts` — the shared quote anchor: collapse, index a body's text, wrap the first
   occurrence, unwrap by class. Both mark species use it so they cannot drift apart.
   **Anything a decorator inserts into a body must contribute NO text nodes** or it corrupts
-  the other species' index (glyph atoms carry their character in CSS `content:`).
+  the other species' index (glyph atoms carry their character in CSS `content:`). It also
+  owns `elide` / `ECHO` — the one pill length every echo of a quote uses (status line, note
+  title, composer handoff), so the chrome cannot disagree with itself about how much of a
+  passage it shows.
+- `src/facets.ts` — PLACEMENTS WITH A VIEWPORT (wave-2 §4): `split` (a second window on the
+  same card, `s` / `⊞`), the article OUTLINE (`o` / `≡`, click = scroll here, alt-click =
+  split a facet parked at that section), and PARKING (a placement remembers the heading it
+  is looking at, in `LoomNode.viewAnchor`, restored after every re-render). It reads the
+  card bodies the card layer owns and never rebuilds them.
 - `src/ui.ts` — toolbar: content mode (wiki/folder), topology toggle, zoom-to-fit,
   save/load, board reset. Keep it one hairline strip.
 - `src/main.ts` — bootstrap/wiring only.
@@ -101,16 +109,43 @@ File: `board.canvas` (JSON Canvas 1.0 — jsoncanvas.org). Be liberal on read.
 - **A thread entry** is `{id,name,nodeIds,pinned?,broken?,prov}` (wave-2 §1). `pinned: true`
   freezes membership; `broken: {at, missing:[{id,index,title}]}` records cards an edit took away.
   Both are written ONLY when present, so an ordinary thread's entry is the wave-1 shape.
+- **A FACET is a second placement of one card** (wave-2 §4): `"x-powerset".facetOf:"<nodeId>"`
+  plus an optional `"x-powerset".viewAnchor:"<heading text>"`. Both are written only when
+  present, so a board with one placement per card is byte-identical to wave 1's. `facetOf`
+  always names a ROOT placement — `makeNode` and `load` flatten a facet-of-a-facet, drop a
+  self-reference, break a cycle, and demote a facet whose card is not in the file.
+  **What binds to the card**: content (`setContent` writes through to every placement),
+  marks, glyph stamps, trail edges, thread membership — all stored under the ROOT id, and
+  `load` rewrites a file that named a facet instead. **What binds to the placement**: `x/y`,
+  `width/height`, `viewAnchor`, and `prov` (including `x0/y0`, so relax treats windows
+  separately). A `viewAnchor` is a HEADING TEXT, never a pixel offset, for the same reason a
+  mark is a quote: provider HTML is re-fetched constantly and an offset rots silently.
 - **Unknown fields are preserved verbatim** on every object and at board level — additive schema
   discipline. A hand-edit, a plugin's key, or an agent's extension survives a round trip.
+- **An empty `title` is read as a missing one.** P0 convention gap #2: the agent wrote
+  `"title": ""`, `??` never fired, and four cards captioned themselves "untitled". Blank now
+  falls back to `model.fallbackTitle` (first line of a note's text; the ref's tail otherwise),
+  which `makeNode` also applies, so neither a file nor a creation site can produce one.
 Marks anchor by quoted text (first occurrence), not offsets — survives re-render, fine for
 a prototype.
 
 ## Interaction conventions
 
 - Left-drag on paper = pan (and marquee later — alt-drag reserved for marquee).
-  Left-drag on card = move card. Wheel = pan; ctrl/cmd+wheel & pinch = zoom-at-cursor.
+  Left-drag on card = move card; drag the corner grip = resize it (grid-free, floor 120×80).
+  Wheel = pan; ctrl/cmd+wheel & pinch = zoom-at-cursor.
   Double-click paper = zoom-to-fit. `1`..`3` set topology mode; `f` zoom-to-fit.
+- Facets (wave-2 §4): `s` (or `⊞` in the card head) splits a second window on the selected
+  card; `o` (or `≡`) toggles its outline; an outline entry scrolls this window there and
+  ALT-clicking one splits a facet already parked at that section.
+- **Composer handoffs are keyed BLOCKS, not appended lines** (wave-2 §4, critique-ledger
+  item 7). `host.sendBlock(key, lines)`: the same key with the same lines COLLAPSES (the
+  block already there is marked `×n` — pressing `c` twice says "yes, that one" rather than
+  saying it twice); the same key with different lines REPLACES (the stale copy goes, the new
+  one lands at the end, because the strip is read from the bottom); a new key appends. Keys
+  are `thread:<id>` / `run:<ids>` / `glyph:<name>` / `card:<id>` / `fiber:<card>:<quote>`.
+  Quotes inside a handoff are elided at pill length with counts beside them, since the full
+  text is already in the board file and in `marks/<glyph>.md`.
 - Entropy verbs (wave-2 §3): `t` pull the selected thread taut — or, whenever a restore point
   is held for the current scope, put every card back where the hand left it. `b` comb the
   selected thread. `r` relax: scope FOLLOWS THE SELECTION (a thread if one is grabbed, the
@@ -837,3 +872,117 @@ vocabulary and one new verb on the fiber pill.
   of "never moves what you did not select", and the session should say whether it hurts); an
   animation for relax that differs from pull's (one ease, one reading of "these move as one");
   and any garbage collection of restore points by age.
+
+**2026-08-06 — wave-2 stage 4 (facets, the outline, and four from the critique ledger).**
+
+The owner's third critique: "multiple instances of the same card feel near-necessary — I want
+to compare two sections of one article side by side." Ideation §3.1 already said a card on the
+cloth is a PLACEMENT rather than the thing; §7.7 refines it to placement = (card, position,
+viewport). One new module (`src/facets.ts`), one new modeled relation (`facetOf`), one new
+per-placement field (`viewAnchor`), and the small chrome the ledger asked for.
+
+- **THE SPLIT IS IN THE MODEL, NOT IN A COPY.** A facet is a `LoomNode` with
+  `facetOf: <root id>`. The line that decides everything else: **content, marks, glyph
+  stamps, trail edges and thread membership bind to the CARD; position, size, scroll anchor
+  and provenance bind to the PLACEMENT.** `board.contentRoot(id)` is the one hop that
+  expresses it, and `addMark`/`addGlyph`/`addEdge`/`addThread` canonicalize through it on the
+  way in while `marksOf`/`glyphsOf` canonicalize on the way out. So "highlight in one facet,
+  see it in both" is not a synchronisation feature — there is only ever one highlight, and
+  two windows drawing it. `setContent` is the mirror image: it writes through to every
+  placement and names them all in the change, so a note typed into one facet appears in the
+  other with no observer anywhere.
+- **`facetOf` is always FLAT.** A facet of a facet, a facet of itself, a two-node cycle, a
+  facet of a card the file does not contain — `makeNode` and `load` each reduce all four to
+  "a root placement on this board, or nothing". Every reader downstream is allowed to assume
+  one hop, which is why `contentRoot` is cheap enough to call inside the edge draw loop.
+- **Trail edges bind to the card and DRAW to the nearest placement** — the brief's
+  decide-by-building call, made and logged. Following a link out of a facet records the walk
+  once, from the card (`prov.from` still names the window you were actually reading, which is
+  the honest thing to keep and costs nothing). At draw time each end picks the placement
+  closest to the other end. **The consequence to feel, and the reason this is logged rather
+  than hidden: moving a facet now changes which window a trail lands on, so the weave's shape
+  answers to where the windows are.** The alternative — an edge per facet — multiplies the
+  weave every time a card is opened twice, which is the opposite of what facets are for.
+  Verified live: split at a section, click a link in the FACET, and the new card blooms beside
+  the facet with the trail drawn from it, while the file records one edge from the card.
+- **Removing a placement is not removing a card.** `removeNode` used to be unambiguous;
+  with facets it has two arms. Removing the root while other placements survive PROMOTES the
+  eldest survivor and re-points every reference to it — siblings' `facetOf`, edges, marks,
+  stamps, and **thread membership, which is re-pointed rather than broken**, because the card
+  is still on the board. Only when the LAST placement goes does the wave-2 §1 break record
+  fire. Verified live: unpinning the root of a two-facet card kept both marks, the trail edge,
+  the thread and the survivor's own `viewAnchor`, all through a reload.
+- **A placement remembers where it is LOOKING, as a heading.** `viewAnchor` is heading TEXT,
+  never a scroll offset — the same discipline marks obey and for the same reason. It is
+  tracked on scroll (500 ms debounce, so only the heading you stopped at is written) and
+  restored after every body re-render.
+  - **Found in the browser, not reasoned about:** on a reload the article arrives from the
+    network *after* the opening fit, and the card is still CULLED at that instant — a
+    `display:none` body reports every rect as zero, so the scroll assignment silently read
+    back 0 and every facet opened at the top. `park` now DETECTS the failure (a body with no
+    layout) and queues it, draining on camera changes (culling and the tier band are both
+    functions of the camera) plus a bounded RAF ladder. This class of bug — "the assignment
+    silently reads back 0" — is the third time this codebase has hit it (see stage 4's
+    culling fix and the completeness pass); it is worth knowing about.
+- **The outline is read out of the body's own DOM**, not out of the source text: the body is
+  what the reader is looking at, and it has already been sanitized, truncated and link-tagged
+  by the provider. A second parse would be a second truth. **Alt-click on an outline entry
+  splits a facet parked there** — the brief asked for the table-stakes outline critique and
+  the facet mechanic in one gesture, and this is it: the list you are already using to find
+  two sections is the thing that opens the second window on one of them.
+- **Card resize** (ledger item 4) is a corner grip in `cards.ts`: two hairlines, counter-scaled
+  so the target survives zoom, grid-free (a card is a sheet of paper, not a cell), floored by
+  `sizeNode`'s existing 120×80. Per-placement, like position. Hidden below the full band,
+  where there is nothing to size for.
+- **Highlight readability** (ledger item 4) is three geometry changes in `styles.css` and NO
+  change to any text: the mark's rule is 2px rather than a sub-pixel hairline; an anchor's own
+  ghost rule steps aside under a mark so a marked link carries ONE line and not two; and a card
+  receded by a GLYPH selection now takes its marks back with it, as a thread selection already
+  did (before, an off-selection card's `--sig` underline stayed louder than its own prose — a
+  contrast inversion, the quiet thing shouting). The passage itself stays pure ink on pure
+  paper at full contrast, same size, same weight. No wash was ever on the table.
+- **Composer elision** (ledger item 7) is two changes that have to go together. Quotes echo at
+  PILL LENGTH with counts (`quotes.elide`, one constant shared by the status line, note titles
+  and every handoff), because the strip is a strip and the full text is already kept in the
+  board file and in `marks/<glyph>.md`. And a handoff is now ONE KEYED BLOCK
+  (`host.sendBlock`), replace-or-collapse: `c` pressed twice marks the block `×2` instead of
+  typing the thread twice, and handing off a thread that has since grown replaces the stale
+  copy rather than sitting beside it. Verified live: three `c` presses on a card → one line and
+  `×3`; a thread handed off, then marked, then handed off again → one block, "replaced the
+  earlier copy".
+- **P0 gap #2, closed at both ends.** The agent wrote `"title": ""` on its note cards; an empty
+  string is not a missing key, so the codec's `??` never fired and the cards captioned
+  themselves "untitled" at every altitude. `model.fallbackTitle` is now shared by the codec and
+  by `makeNode`, and blank is treated as absent, so neither a file nor a creation site in this
+  build can make an untitled card. (One subtlety the fixpoint check caught: the note fallback
+  trims AFTER the 60-char cut, not before — a slice ending on a space would be written with it
+  and read back trimmed, and the codec would oscillate for ever.)
+- **`arrange.freeSpotNear`** — trail's private `placeNear` generalized rather than copied. A
+  facet blooms beside its source by the same reading of "beside" a spawn does; only the
+  "everything is full" answer differs (a spawn jitters and overlaps; a facet prefers the
+  visible frame, then anywhere, then overlaps).
+- **New `ChangeKind`, `"view"`.** A placement parking itself is not a `content` change —
+  laundering it through one would re-assign every body's `innerHTML` on a scroll. Every
+  decorating layer early-returns on it; `cards.ts` skips its reconcile entirely.
+- **Verified.** `npm run build` clean; an off-DOM harness (**80 assertions**, all pass;
+  esbuild's exit code confirmed 0 first, per stage 2's warning) over
+  `Out/p0-agent-thread/board.canvas`, `Out/sample-board.canvas` and synthetic boards: both real
+  boards still round-trip as a fixpoint and gain no `facetOf`/`viewAnchor` key; the P0 board's
+  two blank-titled notes take their first line and nothing else about it changes; content
+  fan-out, mark/stamp/edge/thread canonicalization, per-placement position/size/anchor,
+  promotion-on-removal, and a hostile file carrying a dangling facet, a self-facet, a cycle, an
+  edge naming a facet end and an edge that folds onto its own card. Then in-browser (dev server
+  5199): the outline panel, alt-click splitting a parked facet, a highlight made in one facet
+  drawn in both and stored once, a trail edge from a facet, the grip resizing one placement and
+  not its twin, `c`×3 collapsing to `×3`, a re-handoff replacing, `s` splitting from the
+  keyboard, and promotion on unpinning a root — all with zero console errors on a clean load.
+  The pane's localStorage was cleared back to its fresh single-card seed afterwards and no
+  `window.__loom`-style source hook was ever added.
+- **Not done, deliberately:** any UI that says a card HAS facets other than the `facet n/m`
+  marker on its kind line (no "all placements" list, no jump-to-sibling — the session should
+  say whether it wants one); collision avoidance when a facet lands (it prefers the visible
+  frame, then anywhere beside the source, then overlaps); a facet of a facet as a distinct
+  concept (flattened, and the flattening is the design); an outline for `note` cards (a note is
+  its own outline); scroll-position memory finer than a heading (there is no honest way to keep
+  a pixel offset across a re-fetch); and edges drawn per-facet, which is the decision this
+  stage was asked to make by building it.

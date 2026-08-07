@@ -63,6 +63,80 @@ export function scopeKey(threadId: string | null, nodeIds: readonly string[]): s
   return threadId ? `thread:${threadId}` : `run:${nodeIds.join("|")}`;
 }
 
+// -------------------------------------------------------------- placement ----
+
+export interface NearOptions {
+  /** clear air between the source card and the new one */
+  gap?: number;
+  /** vertical step between rungs, on top of the new card's height */
+  stagger?: number;
+  /** how many columns out to try */
+  columns?: number;
+  /** how many rungs (0, +1, −1, +2, …) per column */
+  rungs?: number;
+  /** also try columns to the LEFT of the source, after the right-hand ones */
+  left?: boolean;
+  /** world rect the spot must sit inside (the visible frame, usually) */
+  within?: { minX: number; minY: number; maxX: number; maxY: number } | null;
+}
+
+/**
+ * BLOOM NEAR THE SOURCE. Free air beside a card: right edge + gap, staggered
+ * down-then-up, stepping into a further column only when the first is genuinely
+ * full. `null` when nothing is free — the caller decides whether to overlap or
+ * to give up, because those are different answers for a spawn and for a facet.
+ *
+ * Pure, like everything else here: it is handed the nodes to avoid rather than
+ * reaching for a board, so the two callers (trail spawns, facet splits) share
+ * one reading of "beside".
+ */
+export function freeSpotNear(
+  nodes: readonly LoomNode[],
+  src: LoomNode,
+  w: number,
+  h: number,
+  opts?: NearOptions,
+): Spot | null {
+  const gap = opts?.gap ?? 60;
+  const step = h + (opts?.stagger ?? 28);
+  const columns = opts?.columns ?? 4;
+  const rungs = opts?.rungs ?? 12;
+  const within = opts?.within ?? null;
+
+  const xs: number[] = [];
+  for (let col = 0; col < columns; col += 1) xs.push(src.x + src.width + gap + col * (w + gap));
+  if (opts?.left) {
+    for (let col = 0; col < columns; col += 1) xs.push(src.x - gap - w - col * (w + gap));
+  }
+
+  for (const x of xs) {
+    for (let i = 0; i < rungs; i += 1) {
+      const rung = Math.ceil(i / 2) * (i % 2 === 1 ? 1 : -1); // 0, +1, -1, +2, …
+      const y = src.y + rung * step;
+      if (within && (x < within.minX || x + w > within.maxX)) continue;
+      if (within && (y < within.minY || y + h > within.maxY)) continue;
+      if (!collides(nodes, x, y, w, h)) return { x: Math.round(x), y: Math.round(y) };
+    }
+  }
+  return null;
+}
+
+function collides(
+  nodes: readonly LoomNode[],
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  pad = 12,
+): boolean {
+  for (const n of nodes) {
+    if (x < n.x + n.width + pad && x + w + pad > n.x && y < n.y + n.height + pad && y + h + pad > n.y) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** centre of a card in world space */
 function centre(n: LoomNode): Spot {
   return { x: n.x + n.width / 2, y: n.y + n.height / 2 };

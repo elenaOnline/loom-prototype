@@ -41,7 +41,7 @@ import type { Board, Change, GlyphStamp, LoomNode } from "./model";
 import { GLYPH_PALETTE, glyphChar } from "./model";
 import type { Host } from "./host";
 import { refOf } from "./codec";
-import { unwrapAll, wrapQuote } from "./quotes";
+import { elide, unwrapAll, wrapQuote } from "./quotes";
 
 /** world px — a glyph file is a document, not a margin note */
 const FILE_W = 320;
@@ -73,8 +73,12 @@ export interface GlyphLayerOptions {
   camera: Camera;
   viewport: HTMLElement;
   host: Host;
-  /** the card layer owns card DOM; this module only decorates it */
-  getCardEl: (nodeId: string) => HTMLElement | undefined;
+  /**
+   * EVERY placement of the card: a stamp is a passage on a card, so it draws in
+   * every window open on it (wave-2 §4). The card layer owns card DOM; this
+   * module only decorates it.
+   */
+  getCardEls: (nodeId: string) => HTMLElement[];
   onStatus?: (text: string) => void;
   /** a glyph selection and a thread selection are two names for the same cloth */
   onSelect?: (glyph: string | null) => void;
@@ -112,12 +116,12 @@ export function createGlyphLayer(options: GlyphLayerOptions): GlyphLayer {
       for (const n of board.nodes()) apply(n.id);
       return;
     }
-    const el = options.getCardEl(nodeId);
-    if (!el) return;
     const stamps = board.glyphsOf(nodeId);
-    paintBody(el, stamps);
-    paintHead(el, stamps);
-    paintState(el, stamps);
+    for (const el of options.getCardEls(nodeId)) {
+      paintBody(el, stamps);
+      paintHead(el, stamps);
+      paintState(el, stamps);
+    }
   }
 
   /** the margin marks: a glyph beside the paragraph the passage lives in */
@@ -194,7 +198,9 @@ export function createGlyphLayer(options: GlyphLayerOptions): GlyphLayer {
     const row = existing ?? document.createElement("span");
     if (!existing) {
       row.className = "card-glyphs";
-      head.insertBefore(row, head.querySelector(".card-unpin"));
+      // the head's controls live in their own span since wave-2 §4, so the
+      // reference node has to be that span (a non-child would throw)
+      head.insertBefore(row, head.querySelector(":scope > .card-controls"));
     }
     const counts = new Map<string, number>();
     for (const stamp of stamps) counts.set(stamp.glyph, (counts.get(stamp.glyph) ?? 0) + 1);
@@ -430,22 +436,37 @@ export function createGlyphLayer(options: GlyphLayerOptions): GlyphLayer {
 
   // ---- handoff ------------------------------------------------------------
 
-  /** the glyph as a line of thought: what PowerSet's composer would receive */
+  /**
+   * The glyph as a line of thought: what PowerSet's composer would receive.
+   *
+   * Elided at pill length and sent as one keyed block, exactly as a thread is
+   * (wave-2 §4). The FULL quotes are not lost by eliding them here — they are in
+   * `marks/<glyph>.md`, which the header line names, and that is the point of a
+   * glyph file: the strip carries the shape of the thought, the file carries it
+   * whole, and an agent on the other end can read either.
+   */
   function handOff(): boolean {
     const glyph = selected;
     if (!glyph) return false;
     const stamps = board.stampsOf(glyph);
     const cards = new Set(stamps.map((s) => s.nodeId));
-    host.sendToComposer(
+    const lines = [
       `glyph: ${glyphChar(glyph)} ${glyph} (${count(stamps.length, "passage")} · ` +
         `${count(cards.size, "card")}) — ${filePath(glyph)}`,
-    );
+    ];
     for (const stamp of stamps) {
-      host.sendToComposer(`    > ${mdText(stamp.quote)}`);
+      lines.push(`    > ${elide(stamp.quote)}`);
       const node = board.node(stamp.nodeId);
-      host.sendToComposer(`      from ${node ? refOf(node) : "(card gone)"}`);
+      lines.push(`      from ${node ? refOf(node) : "(card gone)"}`);
     }
-    status(`handed off ${glyphChar(glyph)} ${glyph} — ${count(stamps.length, "passage")}`);
+    const result = host.sendBlock(`glyph:${glyph}`, lines);
+    const how =
+      result === "collapsed"
+        ? " (already in the strip — marked ×n)"
+        : result === "replaced"
+          ? " (replaced the earlier copy)"
+          : "";
+    status(`handed off ${glyphChar(glyph)} ${glyph} — ${count(stamps.length, "passage")}${how}`);
     return true;
   }
 
@@ -494,7 +515,9 @@ export function createGlyphLayer(options: GlyphLayerOptions): GlyphLayer {
       change.kind === "position" ||
       change.kind === "meta" ||
       change.kind === "threads" ||
-      change.kind === "arrange"
+      change.kind === "arrange" ||
+      // a placement scrolled to a heading; the stamps in it are untouched
+      change.kind === "view"
     ) {
       return;
     }
@@ -532,11 +555,11 @@ export function createGlyphLayer(options: GlyphLayerOptions): GlyphLayer {
       window.removeEventListener("keydown", onKeyDown);
       selected = null;
       for (const n of board.nodes()) {
-        const el = options.getCardEl(n.id);
-        if (!el) continue;
-        paintBody(el, []);
-        paintHead(el, []);
-        el.removeAttribute("data-glyphsel");
+        for (const el of options.getCardEls(n.id)) {
+          paintBody(el, []);
+          paintHead(el, []);
+          el.removeAttribute("data-glyphsel");
+        }
       }
     },
   };

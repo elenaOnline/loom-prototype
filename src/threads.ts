@@ -63,9 +63,12 @@ import { SCOPE_BOARD, combSpots, relaxSpots, scopeKey, tautSpots } from "./arran
 import type { EdgeLayer } from "./edges";
 import type { Host } from "./host";
 import { refOf } from "./codec";
+import { collapse, elide } from "./quotes";
 
 /** ms for the arrangement ease — long enough to read as one object moving */
 const PULL_MS = 460;
+/** a note is the reader's own writing: a longer leash than a quoted passage */
+const NOTE_ECHO = 96;
 /** screen px between the nameplate and the top of the root card */
 const PLATE_LIFT = 30;
 
@@ -315,13 +318,15 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     for (const node of board.nodes()) {
       const el = options.getCardEl(node.id);
       if (!el) continue;
-      const inThread = sel !== null && selectedNodes.has(node.id);
+      // membership is by CARD (wave-2 §4): every window on a card the thread
+      // holds is lit, or a facet of a thread card would read as off-thread
+      const inThread = sel !== null && selectedNodes.has(board.contentRoot(node.id));
       if (!sel) el.removeAttribute("data-thread");
       else el.setAttribute("data-thread", inThread ? "in" : "out");
 
       if (sel && inThread) {
         if (!borrowedZ.has(node.id)) borrowedZ.set(node.id, el.style.zIndex);
-        el.style.zIndex = String(Z_THREAD + sel.nodeIds.indexOf(node.id));
+        el.style.zIndex = String(Z_THREAD + sel.nodeIds.indexOf(board.contentRoot(node.id)));
       } else if (borrowedZ.has(node.id)) {
         el.style.zIndex = borrowedZ.get(node.id) ?? "";
         borrowedZ.delete(node.id);
@@ -759,7 +764,21 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
 
   // ---- handoff ------------------------------------------------------------
 
-  /** exactly what PowerSet's composer would receive — no prose, no decoration */
+  /**
+   * Exactly what PowerSet's composer would receive — no prose, no decoration.
+   *
+   * ELISION (wave-2 §4, critique-ledger item 7). Quotes are echoed at PILL
+   * LENGTH with counts rather than in full: the strip is a strip, and the whole
+   * text is already kept in the two places that are supposed to hold it (the
+   * board file and, for a glyph, `marks/<name>.md`). The counts are the promise
+   * that nothing was silently dropped.
+   *
+   * And the handoff goes as ONE KEYED BLOCK, so pressing `c` twice collapses to
+   * `×2` instead of typing the thread twice, and handing off a thread that has
+   * since grown REPLACES the stale copy rather than sitting beside it. Wave 1
+   * appended line by line and did neither (reproduced live: double keypress =
+   * full duplicate).
+   */
   function handOff(): boolean {
     if (!selection) return false;
     const nodes = selection.nodeIds
@@ -770,33 +789,44 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     const thread = currentThread();
     const name = thread?.name ?? "unnamed thread";
     const frozen = thread?.pinned ? " · pinned" : "";
-    host.sendToComposer(
-      `thread: ${name} (${nodes.length} card${nodes.length === 1 ? "" : "s"})${frozen}`,
-    );
+    const lines: string[] = [];
+    let marks = 0;
+    const body: string[] = [];
+
     // a broken thread hands off broken: the agent on the other end is told what
     // the line lost rather than being handed a shorter line as if it were whole
     for (const lost of thread?.broken?.missing ?? []) {
-      host.sendToComposer(`    (missing: ${lost.title || lost.id} — was card ${lost.index + 1})`);
+      body.push(`    (missing: ${lost.title || lost.id} — was card ${lost.index + 1})`);
     }
-    let marks = 0;
     for (const node of nodes) {
-      host.sendToComposer(refOf(node));
-      // the fibers a card carries ride along under it: a highlight is quoted,
-      // a note is quoted AND its text is written inline, so the handoff reads
-      // as the line of thought plus what was thought about it
-      for (const mark of board.marksOf(node.id)) {
-        const quote = mark.quote.replace(/\s+/g, " ").trim();
-        if (!quote) continue;
+      const own = board.marksOf(node.id).filter((m) => collapse(m.quote).length > 0);
+      const facets = board.placementsOf(node.id).length;
+      body.push(
+        `${refOf(node)}${own.length === 0 ? "" : ` · ${count(own.length, "mark")}`}` +
+          `${facets > 1 ? ` · ${facets} facets` : ""}`,
+      );
+      // the fibers a card carries ride along under it: a highlight is quoted at
+      // pill length, a note is quoted AND its text written inline
+      for (const mark of own) {
         marks += 1;
-        host.sendToComposer(`    > ${quote}`);
+        body.push(`    > ${elide(mark.quote)}`);
         if (mark.kind !== "note") continue;
         const text = mark.noteNodeId ? (board.node(mark.noteNodeId)?.text ?? "") : "";
-        const written = text.replace(/\s+/g, " ").trim();
-        host.sendToComposer(`      note: ${written || "(empty)"}`);
+        body.push(`      note: ${elide(text, NOTE_ECHO) || "(empty)"}`);
       }
     }
-    const tail = marks === 0 ? "" : ` · ${marks} mark${marks === 1 ? "" : "s"}`;
-    status(`handed off "${name}" — ${nodes.length} refs in the composer${tail}`);
+    const tally = marks === 0 ? "" : ` · ${count(marks, "mark")}`;
+    lines.push(`thread: ${name} (${count(nodes.length, "card")}${tally})${frozen}`, ...body);
+
+    const key = thread ? `thread:${thread.id}` : `run:${selection.nodeIds.join("|")}`;
+    const result = host.sendBlock(key, lines);
+    const how =
+      result === "collapsed"
+        ? " (already in the strip — marked ×n, not repeated)"
+        : result === "replaced"
+          ? " (replaced the earlier copy)"
+          : "";
+    status(`handed off "${name}" — ${nodes.length} refs in the composer${tally}${how}`);
     return true;
   }
 
@@ -891,6 +921,8 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
   }
 
   const unsubscribe = board.onChange((change: Change) => {
+    // a placement parked itself at a heading; nothing about any thread moved
+    if (change.kind === "view") return;
     if (change.kind === "graph") applyGrowth(change.edgeIds);
     // a load brings its own restore points; a deletion can retire one. Either
     // way the chrome's offer has to be re-read from the model, not remembered.

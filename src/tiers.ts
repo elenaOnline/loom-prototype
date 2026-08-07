@@ -131,7 +131,10 @@ export function createTierLayer(options: TierLayerOptions): TierLayer {
   function labelled(): Set<string> {
     const out = new Set<string>();
     for (const thread of board.threads()) {
-      for (const id of thread.nodeIds) out.add(id);
+      // membership is by CARD, so every facet of a held card is held too
+      for (const id of thread.nodeIds) {
+        for (const n of board.placementsOf(id)) out.add(n.id);
+      }
     }
     return out;
   }
@@ -160,6 +163,7 @@ export function createTierLayer(options: TierLayerOptions): TierLayer {
 
   // ---- the mark count (fibers ride along into the title card) --------------
 
+  /** keyed by CARD; every facet of a marked card carries the same count */
   function markCounts(): Map<string, number> {
     const counts = new Map<string, number>();
     for (const mark of board.marks()) {
@@ -279,7 +283,7 @@ export function createTierLayer(options: TierLayerOptions): TierLayer {
       }
 
       if (counts) {
-        const count = counts.get(node.id) ?? 0;
+        const count = counts.get(board.contentRoot(node.id)) ?? 0;
         if (count !== state.marks) {
           setMarks(el, count);
           state.marks = count;

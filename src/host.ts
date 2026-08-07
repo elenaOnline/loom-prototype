@@ -11,11 +11,30 @@
 // is the whole reason the format is JSON Canvas. localStorage is never dropped;
 // it stays the fallback and keeps taking every write.
 
+/** what `sendBlock` did with a handoff that had been sent before */
+export type BlockResult = "new" | "replaced" | "collapsed";
+
 export interface Host {
   readonly name: string;
   readFile(path: string): Promise<string | null>;
   writeFile(path: string, text: string): Promise<void>;
   sendToComposer(text: string): void;
+  /**
+   * A HANDOFF AS ONE OBJECT (critique-ledger item 7). Wave 1 appended line by
+   * line, so a double keypress typed the whole thread twice and a session that
+   * kept re-handing a growing thread filled the strip with stale copies of
+   * itself. A handoff has an identity — this thread, this glyph, this quote —
+   * so it is sent as a KEYED BLOCK, and the strategy is replace-or-collapse:
+   *
+   *   · same key, same lines  → COLLAPSE: nothing is appended; the block that is
+   *     already there is marked `×2` and scrolled to. Pressing `c` twice says
+   *     "yes, that one" rather than saying it twice.
+   *   · same key, new lines   → REPLACE: the old block is removed and the new
+   *     one appended at the end, because a re-handoff is the latest thing you
+   *     did and the strip is read from the bottom.
+   *   · new key               → appended.
+   */
+  sendBlock(key: string, lines: readonly string[]): BlockResult;
   /** best-effort; null when the platform has no picker or the user cancels */
   pickFolder(): Promise<FileSystemDirectoryHandle | null>;
   /** write the board file through to a real file from now on (null unbinds) */
@@ -103,6 +122,10 @@ export function createLocalStorageHost(composer: HTMLElement): Host {
       appendToComposer(composer, text);
     },
 
+    sendBlock(key, lines) {
+      return appendBlock(composer, key, lines);
+    },
+
     async pickFolder() {
       const picker = window.showDirectoryPicker;
       if (!picker) return null;
@@ -142,6 +165,61 @@ export function appendToComposer(composer: HTMLElement, text: string): HTMLEleme
   composer.appendChild(line);
   composer.scrollTop = composer.scrollHeight;
   return line;
+}
+
+/**
+ * Replace-or-collapse (see `Host.sendBlock`). The composer stays a plain log of
+ * lines — a block is one wrapper element carrying its key and its repeat count,
+ * so what would be typed into PowerSet's composer is still exactly the text you
+ * can read here, with nothing structural invented for the prototype's benefit.
+ */
+export function appendBlock(
+  composer: HTMLElement,
+  key: string,
+  lines: readonly string[],
+): BlockResult {
+  const body = lines.join("\n");
+  const existing = composer.querySelector<HTMLElement>(
+    `.composer-block[data-key="${cssEscape(key)}"]`,
+  );
+
+  if (existing && existing.dataset["body"] === body) {
+    const repeat = Number(existing.dataset["repeat"] ?? "1") + 1;
+    existing.dataset["repeat"] = String(repeat);
+    const badge =
+      existing.querySelector<HTMLElement>(".composer-repeat") ??
+      existing.querySelector<HTMLElement>(".composer-line")?.appendChild(repeatBadge());
+    if (badge) badge.textContent = ` ×${repeat}`;
+    existing.scrollIntoView({ block: "nearest" });
+    return "collapsed";
+  }
+
+  existing?.remove();
+  const block = document.createElement("div");
+  block.className = "composer-block";
+  block.dataset["key"] = key;
+  block.dataset["body"] = body;
+  block.dataset["repeat"] = "1";
+  for (const text of lines) {
+    const line = document.createElement("div");
+    line.className = "composer-line";
+    line.textContent = text;
+    block.appendChild(line);
+  }
+  composer.appendChild(block);
+  composer.scrollTop = composer.scrollHeight;
+  return existing ? "replaced" : "new";
+}
+
+function repeatBadge(): HTMLElement {
+  const badge = document.createElement("span");
+  badge.className = "composer-repeat";
+  return badge;
+}
+
+/** attribute selectors need quoting; keys carry ids, urls and quoted text */
+function cssEscape(value: string): string {
+  return value.replace(/["\\]/g, "\\$&");
 }
 
 /** what a disk save produced: whether it landed, and a handle worth keeping */

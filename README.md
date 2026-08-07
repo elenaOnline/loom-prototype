@@ -66,6 +66,16 @@ lens: an even arc that discards the rhythm so the line reads as one object. All 
 press from `put back`, and the restore point lives in the *file* — pull a thread, reload the
 page, and it still un-pulls.
 
+**A card can be in two places at once.** A card on the cloth is a *placement*, not the thing
+itself — so **split a facet** (`s`, or `⊞` in the card head) and you get a second window on the
+same card, with its own position, its own size and its own scroll. Highlight a passage in one
+and it draws in both, because there is only one highlight: marks, glyph stamps, trail edges and
+thread membership all bind to the *card*. Article cards also carry an **outline** (`o`, or `≡`):
+click a heading to scroll this window there, alt-click it to split a facet already parked at
+that section — which is how "compare two sections side by side" becomes one gesture from the
+list you were already using to find them. A placement remembers where it is looking as a
+*heading*, never a pixel offset, so it opens there again after a reload.
+
 **The board is a file.** Everything persists as
 [JSON Canvas](https://jsoncanvas.org) (`save…` / `load…`, plus localStorage autosave) with
 namespaced `x-powerset` extensions for edge kinds, threads, marks, glyph stamps, provenance,
@@ -78,11 +88,17 @@ tethered note, all legible in ~90 lines of JSON.
 ## Keys
 
 `1/2/3` topology mode · `f` zoom-to-fit · double-click paper fits · ctrl/⌘+wheel or pinch
-zooms at cursor · wheel pans · drag paper pans · drag a card by its title bar · alt-drag
-card→card draws a manual edge · click a trail edge to grab its thread · `t` pull taut / put
-back · `b` comb · `r` relax (`shift-r` for the whole cloth) · `n` name · `p` pin (freeze a
-named thread's membership) · `c` hand off · Esc deselect · select text in a card for the mark
-pill · click a glyph stamp (or a toolbar chip) to light every place it was stamped.
+zooms at cursor · wheel pans · drag paper pans · drag a card by its title bar · drag its
+corner to resize · alt-drag card→card draws a manual edge · click a trail edge to grab its
+thread · `t` pull taut / put back · `b` comb · `r` relax (`shift-r` for the whole cloth) ·
+`n` name · `p` pin (freeze a named thread's membership) · `s` split a facet · `o` outline
+(alt-click an entry to split a facet there) · `c` hand off · Esc deselect · select text in a
+card for the mark pill · click a glyph stamp (or a toolbar chip) to light every place it was
+stamped.
+
+Handing the same thing off twice does not type it twice: a handoff is a keyed block, so a
+second `c` marks it `×2` and a changed one replaces the stale copy. Quotes echo at pill
+length with counts — the whole passage is in the board file and the glyph file.
 
 ## Design language
 

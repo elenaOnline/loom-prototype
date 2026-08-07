@@ -134,6 +134,24 @@ export interface LoomNode {
   y: number;
   width: number;
   height: number;
+  /**
+   * A FACET (wave-2 §4, ideation §7.7): this node is a SECOND PLACEMENT of the
+   * card whose id this is — same underlying content, its own position, its own
+   * size, its own scroll. It is never a facet of a facet: the field always names
+   * a ROOT placement, and `makeNode`/`load` flatten anything else.
+   *
+   * What binds to the CARD (and is therefore shared by every facet): content,
+   * marks, glyph stamps, trail edges, thread membership. What binds to the
+   * PLACEMENT: x/y, width/height, `viewAnchor`, `prov` (including x0/y0).
+   */
+  facetOf?: string;
+  /**
+   * This placement's own view state: the heading text it is parked at. Stored as
+   * TEXT, never a pixel offset — the same rule marks obey (see quotes.ts), and
+   * for the same reason: provider HTML is re-fetched and re-laid-out constantly,
+   * so an offset rots silently while a heading either matches or does not.
+   */
+  viewAnchor?: string;
   /** notes only — persisted */
   text?: string;
   /**
@@ -375,6 +393,8 @@ export interface BoardSnapshot {
  * `threads` = the named-thread list · `marks` = the fibers on a card ·
  * `glyphs` = the meaning-mark stamps · `arrange` = a restore point was taken or
  * spent (no card moved — the moves themselves arrive as `position`) ·
+ * `view` = one PLACEMENT's own scroll anchor moved (wave-2 §4; nothing about
+ * the card itself changed, so every decorating layer ignores it) ·
  * `reset` = the whole board was replaced.
  */
 export type ChangeKind =
@@ -386,6 +406,7 @@ export type ChangeKind =
   | "marks"
   | "glyphs"
   | "arrange"
+  | "view"
   | "reset";
 
 export interface Change {
@@ -405,6 +426,10 @@ export interface NodeSpec {
   width?: number;
   height?: number;
   text?: string;
+  /** a SECOND placement of this card (wave-2 §4); flattened to the root */
+  facetOf?: string;
+  /** the heading this placement opens at */
+  viewAnchor?: string;
   /** this card renders `marks/<glyphFile>.md` (wave-2 §2) */
   glyphFile?: string;
   html?: string;
@@ -442,6 +467,15 @@ export interface Board {
   glyphsOf(nodeId: string): GlyphStamp[];
   /** one glyph's whole collection — the thing `marks/<glyph>.md` is written from */
   stampsOf(glyph: string): GlyphStamp[];
+  /**
+   * The CARD behind a placement (wave-2 §4). A facet's root, or the id itself.
+   * Everything that binds to the card rather than to the placement — marks,
+   * stamps, edges, thread membership — is stored and queried under this id, so
+   * "highlight in one facet, see it in both" needs no synchronisation code.
+   */
+  contentRoot(nodeId: string): string;
+  /** every placement of one card, root first, then facets in creation order */
+  placementsOf(nodeId: string): LoomNode[];
   /** the placed card for a ref, if any — the topology toggle's "already here?" */
   findByRef(kind: NodeKind, ref: string): LoomNode | undefined;
   findEdge(from: string, to: string, kind: EdgeKind): LoomEdge | undefined;
@@ -458,10 +492,17 @@ export interface Board {
    */
   moveNodes(spots: readonly ArrangeSpot[]): void;
   sizeNode(id: string, width: number, height: number): void;
+  /**
+   * Content belongs to the CARD, so this writes through to EVERY placement of it
+   * and names them all in the change. That is the whole of "edit in one facet,
+   * see it in the other": one mutation path, no observers, no drift.
+   */
   setContent(
     id: string,
     patch: { title?: string; html?: string; text?: string; status?: LoadStatus; error?: string },
   ): void;
+  /** where THIS placement is parked — per-placement, never fanned out */
+  setViewAnchor(id: string, anchor: string | undefined): void;
 
   addEdge(from: string, to: string, kind: EdgeKind, spec?: EdgeSpec): LoomEdge | undefined;
   removeEdge(id: string): void;
@@ -507,6 +548,18 @@ export interface Board {
 }
 
 let idCounter = 0;
+
+/** first occurrence wins, order preserved */
+function dedupe(ids: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
 
 export function freshId(prefix: string): string {
   idCounter += 1;
@@ -691,6 +744,29 @@ export function resolveThreadForRun(
   return best;
 }
 
+/**
+ * The name a card falls back to when nothing said one (P0 convention gap #2).
+ *
+ * The P0 agent wrote `"title": ""` on its note cards — an empty string is not a
+ * missing key, so the codec's `??` never fired and four cards captioned
+ * themselves "untitled" at every altitude. A caption is how a card is READ at
+ * thread and cloth range, so "untitled" is not a cosmetic failure: it is the
+ * card refusing to say what it is. Shared by `makeNode` (so no creation site in
+ * this build can make one) and by the codec (so no file can bring one in).
+ */
+export function fallbackTitle(kind: NodeKind, ref: string, text?: string): string {
+  if (kind === "note") {
+    // trim AFTER the cut, not before: a 60-char slice that ends on a space
+    // would be written with it and read back trimmed, and the codec would
+    // oscillate for ever (caught by the fixpoint check on the P0 board)
+    const first = (text ?? "").split("\n", 1)[0] ?? "";
+    return first.slice(0, 60).trim() || "note";
+  }
+  if (!ref.trim()) return "untitled";
+  const tail = ref.split("/").pop() ?? ref;
+  return tail.replace(/\.(md|markdown|txt)$/i, "");
+}
+
 /** refs compare case-insensitively with collapsed whitespace/underscores */
 export function normalizeRef(ref: string): string {
   return ref.trim().replace(/_/g, " ").replace(/\s+/g, " ").toLowerCase();
@@ -714,21 +790,61 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     for (const cb of Array.from(listeners)) cb(change);
   }
 
+  /**
+   * The card behind a placement. `facetOf` is always kept flat (a facet of a
+   * facet is rewritten to the shared root at creation and on load), so this is
+   * one hop and can be called freely in a draw loop.
+   */
+  function rootId(id: string): string {
+    const n = nodes.get(id);
+    if (!n) return id;
+    const parent = n.facetOf;
+    if (parent === undefined || parent === n.id || !nodes.has(parent)) return n.id;
+    return parent;
+  }
+
+  /** every placement of one card, root first, then facets in creation order */
+  function placements(id: string): LoomNode[] {
+    const root = rootId(id);
+    const out: LoomNode[] = [];
+    const head = nodes.get(root);
+    if (head) out.push(head);
+    for (const n of nodes.values()) {
+      if (n.id !== root && rootId(n.id) === root) out.push(n);
+    }
+    return out;
+  }
+
+  function placementIds(id: string): string[] {
+    return placements(id).map((n) => n.id);
+  }
+
   function makeNode(spec: NodeSpec): LoomNode {
     // Every card records where it was BORN, whatever the creation site said —
     // a spawn site that forgets x0/y0 would silently un-build the relax verb.
     const seed: ProvSeed = { ...(spec.prov ?? {}) };
     if (seed.x0 === undefined) seed.x0 = spec.x;
     if (seed.y0 === undefined) seed.y0 = spec.y;
+    const id = spec.id ?? freshId("n");
+    // a facet of a facet is a facet of the same CARD: flatten on the way in, so
+    // nothing downstream ever has to walk a chain
+    let facetOf: string | undefined;
+    if (spec.facetOf !== undefined && spec.facetOf !== id && nodes.has(spec.facetOf)) {
+      facetOf = rootId(spec.facetOf);
+      if (facetOf === id) facetOf = undefined;
+    }
     const node: LoomNode = {
-      id: spec.id ?? freshId("n"),
+      id,
       kind: spec.kind,
       ref: spec.ref ?? "",
-      title: spec.title,
+      // no creation site can make an untitled card (P0 gap #2)
+      title: spec.title.trim() || fallbackTitle(spec.kind, spec.ref ?? "", spec.text),
       x: spec.x,
       y: spec.y,
       width: spec.width ?? DEFAULT_CARD_W,
       height: spec.height ?? DEFAULT_CARD_H,
+      ...(facetOf === undefined ? {} : { facetOf }),
+      ...(spec.viewAnchor === undefined ? {} : { viewAnchor: spec.viewAnchor }),
       ...(spec.text === undefined ? {} : { text: spec.text }),
       ...(spec.glyphFile === undefined ? {} : { glyphFile: spec.glyphFile }),
       ...(spec.html === undefined ? {} : { html: spec.html }),
@@ -812,9 +928,20 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     node: (id) => nodes.get(id),
     edge: (id) => edges.get(id),
     thread: (id) => threads.find((t) => t.id === id),
-    marksOf: (nodeId) => marks.filter((m) => m.nodeId === nodeId),
-    glyphsOf: (nodeId) => stamps.filter((g) => g.nodeId === nodeId),
+    // marks and stamps bind to the CARD, so every facet answers with the same
+    // set and a highlight made in one window is drawn in all of them
+    marksOf: (nodeId) => {
+      const root = rootId(nodeId);
+      return marks.filter((m) => m.nodeId === root);
+    },
+    glyphsOf: (nodeId) => {
+      const root = rootId(nodeId);
+      return stamps.filter((g) => g.nodeId === root);
+    },
     stampsOf: (glyph) => stamps.filter((g) => g.glyph === glyph),
+
+    contentRoot: rootId,
+    placementsOf: (nodeId) => placements(nodeId),
 
     findByRef(kind, ref) {
       if (!ref) return undefined;
@@ -850,13 +977,60 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     removeNode(id) {
       const gone = nodes.get(id);
       if (!gone) return;
+      // THE PLACEMENT LEAVES; THE CARD MAY NOT (wave-2 §4). Unpinning one facet
+      // of a three-facet card must not take the card's marks, stamps, edges or
+      // thread membership with it — they belong to the card, and the card is
+      // still on the board in its other windows. So: if this placement was the
+      // ROOT and other placements survive, the eldest survivor is PROMOTED and
+      // everything that named the old root is re-pointed at it. Only when the
+      // last placement goes does the card's residue go with it.
+      const wasRoot = rootId(id) === id;
       nodes.delete(id);
+      const survivors = wasRoot
+        ? Array.from(nodes.values()).filter((n) => n.facetOf === id)
+        : [];
+      const heir = survivors[0]?.id ?? null;
+      if (heir) {
+        for (const n of survivors) {
+          if (n.id === heir) delete n.facetOf;
+          else n.facetOf = heir;
+        }
+        for (const e of edges.values()) {
+          if (e.from === id) e.from = heir;
+          if (e.to === id) e.to = heir;
+        }
+        for (const e of Array.from(edges.values())) {
+          if (e.from === e.to) edges.delete(e.id); // an edge that folded onto itself
+        }
+        marks = marks.map((m) => {
+          if (m.nodeId !== id && m.noteNodeId !== id) return m;
+          const next = { ...m };
+          if (next.nodeId === id) next.nodeId = heir;
+          if (next.noteNodeId === id) next.noteNodeId = heir;
+          return next;
+        });
+        stamps = stamps.map((g) => (g.nodeId === id ? { ...g, nodeId: heir } : g));
+        // a thread holds CARDS, and the card is still here: re-point, never break
+        threads = threads.map((t) =>
+          t.nodeIds.includes(id)
+            ? { ...t, nodeIds: dedupe(t.nodeIds.map((n) => (n === id ? heir : n))) }
+            : t,
+        );
+      }
       const dropped: string[] = [];
       for (const e of Array.from(edges.values())) {
         if (e.from === id || e.to === id) {
           edges.delete(e.id);
           dropped.push(e.id);
         }
+      }
+      if (heir) {
+        // a restore point still names the placements that are left
+        arrangements = arrangements
+          .map((a) => ({ ...a, spots: a.spots.filter((s) => s.id !== id) }))
+          .filter((a) => a.spots.length > 0);
+        emit({ kind: "graph", nodeIds: [id, heir], edgeIds: dropped });
+        return;
       }
       // A note card is half of a mark, so unpinning it takes the mark with it —
       // otherwise the source card keeps drawing an underline that leads nowhere.
@@ -925,18 +1099,42 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     },
 
     setContent(id, patch) {
-      const n = nodes.get(id);
-      if (!n) return;
-      if (patch.title !== undefined) n.title = patch.title;
-      if (patch.html !== undefined) n.html = patch.html;
-      if (patch.text !== undefined) n.text = patch.text;
-      if (patch.status !== undefined) n.status = patch.status;
-      if (patch.error !== undefined) n.error = patch.error;
-      else if (patch.status === "ready" || patch.status === "loading") delete n.error;
-      emit({ kind: "content", nodeIds: [id] });
+      if (!nodes.has(id)) return;
+      // CONTENT BELONGS TO THE CARD. Every placement gets the same patch and the
+      // change names all of them, so "highlight/edit in one facet, see it in the
+      // other" is a property of the one mutation path rather than a sync loop
+      // somebody has to remember to write.
+      const family = placements(id);
+      for (const n of family) {
+        if (patch.title !== undefined) n.title = patch.title;
+        if (patch.html !== undefined) n.html = patch.html;
+        if (patch.text !== undefined) n.text = patch.text;
+        if (patch.status !== undefined) n.status = patch.status;
+        if (patch.error !== undefined) n.error = patch.error;
+        else if (patch.status === "ready" || patch.status === "loading") delete n.error;
+      }
+      emit({ kind: "content", nodeIds: family.map((n) => n.id) });
     },
 
-    addEdge(from, to, kind, spec) {
+    setViewAnchor(id, anchor) {
+      const n = nodes.get(id);
+      if (!n) return;
+      const next = anchor && anchor.trim() ? anchor : undefined;
+      if ((n.viewAnchor ?? undefined) === next) return;
+      if (next === undefined) delete n.viewAnchor;
+      else n.viewAnchor = next;
+      // deliberately NOT fanned out: a facet exists to be looking somewhere else
+      emit({ kind: "view", nodeIds: [id] });
+    },
+
+    addEdge(rawFrom, rawTo, kind, spec) {
+      // AN EDGE BINDS TO THE CARD, NOT THE PLACEMENT (wave-2 §4). Following a
+      // link out of a facet records the walk once, from the card; edges.ts then
+      // DRAWS it between whichever pair of placements is nearest. The alternative
+      // — an edge per facet — would multiply the weave every time you opened a
+      // second window on an article, which is the opposite of what facets are for.
+      const from = rootId(rawFrom);
+      const to = rootId(rawTo);
       if (from === to) return undefined;
       if (!nodes.has(from) || !nodes.has(to)) return undefined;
       const existing = board.findEdge(from, to, kind);
@@ -965,14 +1163,15 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     addMark(spec) {
       const mark: Mark = {
         id: spec.id ?? freshId("m"),
-        nodeId: spec.nodeId,
+        // stored against the CARD: a highlight made in a facet is the card's
+        nodeId: rootId(spec.nodeId),
         quote: spec.quote,
         kind: spec.kind,
         ...(spec.noteNodeId === undefined ? {} : { noteNodeId: spec.noteNodeId }),
         ...(spec.foreign === undefined ? {} : { foreign: { ...spec.foreign } }),
       };
       marks = [...marks, mark];
-      emit({ kind: "marks", nodeIds: [mark.nodeId] });
+      emit({ kind: "marks", nodeIds: placementIds(mark.nodeId) });
       return mark;
     },
 
@@ -980,21 +1179,23 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       const gone = marks.find((m) => m.id === id);
       if (!gone) return;
       marks = marks.filter((m) => m.id !== id);
-      emit({ kind: "marks", nodeIds: [gone.nodeId] });
+      emit({ kind: "marks", nodeIds: placementIds(gone.nodeId) });
     },
 
     addGlyph(spec) {
       const stamp: GlyphStamp = {
         id: spec.id ?? freshId("g"),
         glyph: spec.glyph,
-        nodeId: spec.nodeId,
+        // a stamp is a passage on a CARD; which window you stamped it in is not
+        // part of what it means
+        nodeId: rootId(spec.nodeId),
         quote: spec.quote,
         // a stamp is the brief's `mark` verb, and it came from the card it is on
         prov: makeProv({ how: "mark", from: spec.nodeId, src: null, ...(spec.prov ?? {}) }),
         ...(spec.foreign === undefined ? {} : { foreign: { ...spec.foreign } }),
       };
       stamps = [...stamps, stamp];
-      emit({ kind: "glyphs", nodeIds: [stamp.nodeId] });
+      emit({ kind: "glyphs", nodeIds: placementIds(stamp.nodeId) });
       return stamp;
     },
 
@@ -1002,11 +1203,12 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       const gone = stamps.find((g) => g.id === id);
       if (!gone) return;
       stamps = stamps.filter((g) => g.id !== id);
-      emit({ kind: "glyphs", nodeIds: [gone.nodeId] });
+      emit({ kind: "glyphs", nodeIds: placementIds(gone.nodeId) });
     },
 
     addThread(name, nodeIds, prov) {
-      const kept = nodeIds.filter((id) => nodes.has(id));
+      // a thread is a line of CARDS; two facets of one article are one step
+      const kept = dedupe(nodeIds.filter((id) => nodes.has(id)).map(rootId));
       const thread: Thread = {
         id: freshId("t"),
         name,
@@ -1144,15 +1346,51 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       nodes.clear();
       edges.clear();
       for (const n of snapshot.nodes ?? []) nodes.set(n.id, adoptNode(n));
-      for (const e of snapshot.edges ?? []) {
-        if (nodes.has(e.from) && nodes.has(e.to)) edges.set(e.id, adoptEdge(e));
+      // FLATTEN THE FACET GRAPH ON THE WAY IN. A file may say anything: a facet
+      // of a facet, a facet of a card that is no longer here, a facet of itself.
+      // One pass makes `facetOf` mean exactly "a root placement on this board",
+      // which is the invariant every reader downstream is allowed to assume. A
+      // facet whose card is gone becomes an ordinary card rather than a ghost —
+      // it is still a real placement with real content.
+      for (const n of nodes.values()) {
+        if (n.facetOf === undefined) continue;
+        const seen = new Set<string>([n.id]);
+        let cursor: string | undefined = n.facetOf;
+        let root: string | undefined;
+        while (cursor !== undefined && nodes.has(cursor) && !seen.has(cursor)) {
+          seen.add(cursor);
+          const next: string | undefined = nodes.get(cursor)?.facetOf;
+          if (next === undefined) {
+            root = cursor;
+            break;
+          }
+          cursor = next;
+        }
+        if (root === undefined || root === n.id) delete n.facetOf;
+        else n.facetOf = root;
       }
-      threads = (snapshot.threads ?? []).map(adoptThread);
+      for (const e of snapshot.edges ?? []) {
+        if (!nodes.has(e.from) || !nodes.has(e.to)) continue;
+        const edge = adoptEdge(e);
+        // edges bind to the card: a file naming a facet end is read as the card
+        edge.from = rootId(edge.from);
+        edge.to = rootId(edge.to);
+        if (edge.from === edge.to) continue;
+        edges.set(edge.id, edge);
+      }
+      // everything that binds to the CARD is read as the card: a file that names
+      // a facet in a thread, a mark or a stamp meant the article, not the window
+      threads = (snapshot.threads ?? [])
+        .map(adoptThread)
+        .map((t) => ({ ...t, nodeIds: dedupe(t.nodeIds.map(rootId)) }));
       marks = (snapshot.marks ?? []).map((m) => ({
         ...m,
+        nodeId: rootId(m.nodeId),
         ...(m.foreign ? { foreign: { ...m.foreign } } : {}),
       }));
-      stamps = (snapshot.glyphs ?? []).map(adoptGlyph);
+      stamps = (snapshot.glyphs ?? [])
+        .map(adoptGlyph)
+        .map((g) => ({ ...g, nodeId: rootId(g.nodeId) }));
       // a restore point can only restore cards that are still here. Dead spots
       // are dropped the same way an edge with a missing endpoint is, and an
       // entry left with nothing to put back goes with them — otherwise the

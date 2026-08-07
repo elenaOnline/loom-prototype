@@ -16,6 +16,7 @@ import { createThreadLayer } from "./threads";
 import { createTierLayer } from "./tiers";
 import { createFiberLayer } from "./fibers";
 import { createGlyphLayer } from "./glyphs";
+import { createFacetLayer } from "./facets";
 import { createUi } from "./ui";
 import { createWikiSource } from "./providers/wiki";
 import { createFolderSource, type FolderSource } from "./providers/folder";
@@ -70,10 +71,13 @@ const camera = createCamera({
 
 createGrid(viewport, camera);
 
-/** a card body still has room to scroll in this direction → leave it alone */
+/**
+ * A card body still has room to scroll in this direction → leave it alone. The
+ * outline panel (wave-2 §4) scrolls the same way and takes the same courtesy.
+ */
 function wheelBelongsToCardBody(e: WheelEvent): boolean {
   if (!(e.target instanceof Element)) return false;
-  const body = e.target.closest<HTMLElement>(".card-body");
+  const body = e.target.closest<HTMLElement>(".card-body, .card-outline");
   if (!body) return false;
   const max = body.scrollHeight - body.clientHeight;
   if (max <= 1) return false;
@@ -177,6 +181,25 @@ const tiers = createTierLayer({
   onTier: (_tier, word) => ui.setTier(word),
 });
 
+// facets reads and decorates the same bodies, and must run after the card layer
+// has (re)built them — a placement parks itself at its heading straight after
+// the body it is parked in is written
+createFacetLayer({
+  board,
+  camera,
+  viewport,
+  container: cardsLayer,
+  getCardEl: (id) => cards.element(id),
+  getSelected: () => cards.selected(),
+  select: (id) => {
+    cards.select(id);
+    cards.ping(id);
+  },
+  onHydrate: (id) => trail.hydrate(id),
+  getInsets: insets,
+  onStatus: (text) => ui.status(text),
+});
+
 // fibers reads the tier class the line above writes, and its board listener must
 // run after the card layer has (re)built the body it marks
 createFiberLayer({
@@ -184,7 +207,8 @@ createFiberLayer({
   camera,
   viewport,
   host,
-  getCardEl: (id) => cards.element(id),
+  // every window on the card: a mark belongs to the card, not to a placement
+  getCardEls: (id) => cards.elements(id),
   getInsets: insets,
   onStatus: (text) => ui.status(text),
 });
@@ -198,7 +222,7 @@ const glyphs = createGlyphLayer({
   camera,
   viewport,
   host,
-  getCardEl: (id) => cards.element(id),
+  getCardEls: (id) => cards.elements(id),
   onStatus: (text) => ui.status(text),
   onSelect: (glyph) => {
     ui.setActiveGlyph(glyph);
@@ -337,8 +361,9 @@ function handOffSelection(): void {
       : node.kind === "doc"
         ? `./${node.ref}`
         : node.title;
-  host.sendToComposer(`read ${target}`);
-  ui.status(`sent to composer: ${node.title}`);
+  // keyed by the CARD, so pressing c twice on it collapses rather than repeats
+  const result = host.sendBlock(`card:${board.contentRoot(node.id)}`, [`read ${target}`]);
+  ui.status(`sent to composer: ${node.title}${result === "collapsed" ? " (already there — ×n)" : ""}`);
 }
 
 // ---- boot -------------------------------------------------------------------
