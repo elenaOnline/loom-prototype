@@ -46,9 +46,20 @@ itself becomes the subject). The toolbar names your current altitude.
 anchored by quote), **note** (a small tethered card you can type into immediately),
 **→ composer** (send the quote onward). Marks ride along with thread handoffs.
 
+**Glyphs — the second species of thread.** A trail records *movement*; a glyph records
+*meaning*. The pill's fourth action, **mark ▸**, opens a five-glyph palette (`● ○ ◆ ◇ ✳`);
+one click stamps the passage — no dialog, no naming step. Stamp the same glyph on passages
+in three different cards and they become one collection: the glyph appears in the margin
+beside each passage, on each card's head, and at cloth range as a **constellation** floating
+over the weave, so the board answers *"where did this thought appear?"* by being looked at.
+Click any stamp to light every location (the same inversion a thread uses); `c` hands the
+whole collection to the composer. Each glyph accrues its own commonplace file,
+`marks/<name>.md` — ordered quotes with source refs, rewritten on every change, and placeable
+on the board as a read-only card. Files are the API.
+
 **The board is a file.** Everything persists as
 [JSON Canvas](https://jsoncanvas.org) (`save…` / `load…`, plus localStorage autosave) with
-namespaced `x-powerset` extensions for edge kinds, threads, and marks. The file is
+namespaced `x-powerset` extensions for edge kinds, threads, marks, and glyph stamps. The file is
 human-readable, git-diffable, opens in Obsidian, and is trivially readable *and writable* by
 a coding agent — which is the point. See [examples/sample-board.canvas](examples/sample-board.canvas)
 for a real session: a three-card wander, a return loop, a named thread, a highlight, and a
@@ -60,14 +71,16 @@ tethered note, all legible in ~90 lines of JSON.
 zooms at cursor · wheel pans · drag paper pans · drag a card by its title bar · alt-drag
 card→card draws a manual edge · click a trail edge to grab its thread · `t` pull taut /
 relax · `n` name · `p` pin (freeze a named thread's membership) · `c` hand off · Esc
-deselect · select text in a card for the mark pill.
+deselect · select text in a card for the mark pill · click a glyph stamp (or a toolbar chip)
+to light every place it was stamped.
 
 ## Design language
 
 One flat sheet of paper. Five color roles (`paper · ink · sig · s2 · ghost`), 1px hairlines,
 serif for prose, monospace for chrome, no shadows, no rounded corners, no gradients. State
 is geometry: solid = walked, dashed = asserted, accent loop = returned, faint = held,
-filled atom = pinned, dashed chip = a thread that outlived part of its line.
+filled atom = pinned, dashed chip = a thread that outlived part of its line, dotted ink rule
+= a passage claimed by a glyph (the accent belongs to fibers, ink to meaning).
 
 `ARCHITECTURE.md` is the internal build contract the code was written against, deviation
 log included.

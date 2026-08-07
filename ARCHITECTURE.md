@@ -44,8 +44,18 @@ sessions compose instead of churning. Deviate only with a dated note added at th
   z ≥ 0.55 full · 0.18 ≤ z < 0.55 title-card (serif title + mono path/status) ·
   z < 0.18 glyph (hairline square + pixel-scale label). CSS class swap on `.card`,
   content lazy-rendered once per tier.
-- `src/fibers.ts` — text-selection pill (Highlight · Note · Send to composer); marks
-  persist in model; notes are small text cards tethered to their source.
+- `src/fibers.ts` — text-selection pill (Highlight · Note · Send to composer · Mark ▸);
+  marks persist in model; notes are small text cards tethered to their source. The pill's
+  fourth action stamps a GLYPH (wave-2 §2) by calling `board.addGlyph` — the drawing,
+  selection and file belong to `glyphs.ts`.
+- `src/glyphs.ts` — MEANING-marks, the second species of thread: a five-glyph palette
+  stamped on passages, drawn per tier (margin · card head · cloth constellation),
+  selectable as a unit with the thread inversion idiom, handable with `c`, and accruing
+  `marks/<name>.md` through the Host seam. No edges — the set IS the binding (ideation §9.3).
+- `src/quotes.ts` — the shared quote anchor: collapse, index a body's text, wrap the first
+  occurrence, unwrap by class. Both mark species use it so they cannot drift apart.
+  **Anything a decorator inserts into a body must contribute NO text nodes** or it corrupts
+  the other species' index (glyph atoms carry their character in CSS `content:`).
 - `src/ui.ts` — toolbar: content mode (wiki/folder), topology toggle, zoom-to-fit,
   save/load, board reset. Keep it one hairline strip.
 - `src/main.ts` — bootstrap/wiring only.
@@ -59,7 +69,14 @@ File: `board.canvas` (JSON Canvas 1.0 — jsoncanvas.org). Be liberal on read.
   source is a real EDGE, not a node field (stage-5 deviation, logged below)
 - Edge → standard fields + `"x-powerset":{kind:"trail"|"manual"|"return"|"tether"}`
 - Top level extra: `"x-powerset":{topologyMode,contentMode,threads:[{id,name,nodeIds:[...],prov}],
-  marks:[{id,nodeId,quote,kind:"highlight"|"note",noteNodeId?}]}`
+  marks:[{id,nodeId,quote,kind:"highlight"|"note",noteNodeId?}],
+  glyphs:[{id,glyph,nodeId,quote,prov}]}`
+- **`glyphs` is a collection PARALLEL to `marks`** (wave-2 §2): a fiber is a passage kept
+  where it was found, a glyph is a passage claimed by a thought that recurs elsewhere. The
+  key is omitted entirely on a board with no stamps. The glyph NAME is never narrowed to the
+  five-glyph palette — a file may carry a sixth, and it rides through and draws as its own
+  initial. A glyph-file card is an ordinary `text` node carrying
+  `"x-powerset".glyphFile:"<glyph>"`; it renders `marks/<glyph>.md` and is read-only.
 - **Every node and edge carries `"x-powerset".prov`** (wave-2 §0):
   `{at:ISO-8601-UTC|null, by:"human"|"agent", how:"wander"|"place"|"capture"|"mark"|"reply",
   from:nodeId|null, src:url-or-path|null, x0,y0}` — `x0/y0` = world coords at birth, nodes only.
@@ -610,3 +627,115 @@ replacement is two rules that are deliberately NOT the same rule, plus one invar
   auto-mending a break when the deleted card is re-spawned (a new card is a new placement, and
   pretending otherwise is the silent behaviour the constraint forbids); persisting the pull stash
   (stage 3's, and the key is now ready for it); any prov UI (§8.3 is out of wave 2).
+
+**2026-08-06 — wave 2, stage 2 (glyph marks: the meaning-thread palette).**
+
+The brief's biggest unknown, built choreography-first. A trail records MOVEMENT (where
+attention went, drawn as edges); a glyph records MEANING (one thought recurring in several
+places, drawn as a stamp wherever it recurred). Two new modules — `src/glyphs.ts` (the
+species) and `src/quotes.ts` (the anchor both species share) — plus the model/codec
+vocabulary and one new verb on the fiber pill.
+
+- **The palette is five, named for their shapes, and the NAME is the file name**:
+  `dot ●` · `ring ○` · `lozenge ◆` · `prism ◇` · `star ✳`. Filled/open pairs plus the
+  asterisk, so the vocabulary reads as geometry rather than as five arbitrary icons; no
+  colour role beyond ink. `prism` rather than the obvious "facet" because wave-2 §4 already
+  spends that word on a second placement of a card.
+- **Stamping is one click, and that took a decision.** The brief asks for a fourth pill
+  action "Mark ▸ [glyph]", which is two clicks — and its own bar is *highlight speed*. So
+  the expander is STICKY: it opens once and stays open for the session, and from the second
+  stamp onward the gesture is a single click on the glyph. Pressing a glyph the passage
+  already carries takes the stamp back off, so the gesture is its own undo and no second
+  control had to be invented.
+- **`src/quotes.ts` is an extraction, not a new idea.** There are now two mark species
+  anchoring by quoted text, and two copies of a quote matcher would have drifted the first
+  time one was fixed. `fibers.ts`'s `index`/`draw`/`unwrap` moved there wholesale and both
+  layers call `wrapQuote`/`unwrapAll`. Each unwraps ONLY its own class, so the two decorate
+  the same body without fighting and their order is a preference rather than a contract.
+  - **The one hard rule it creates: a decorator may not add TEXT to a body.** Both layers
+    index the body's text to find their quotes, and a stray "●" in the flow would shift
+    every later match by one character. Glyph atoms therefore carry their character in a
+    CSS `content:` fed by a custom property (`--glyph-char`), never as a text node. Verified
+    live: with four stamps drawn, the two pre-existing fiber marks still wrapped exactly.
+- **A marginal mark hangs beside the BLOCK, not beside the line.** Tying it to the exact
+  line would need measurement and would move on every reflow of a card being resized or
+  scrolled; tied to the paragraph it is stable and it is what a marginal mark has always
+  been. A card widens its own left gutter (`[data-glyphs] .card-body { padding-left }`) only
+  when it carries stamps, so unmarked prose keeps its full measure. Measured in-browser at
+  z=0.64: atom spans screen x 86–90, body edge 81, text starts 97 — clear of both.
+- **One element, three drawings, no third rendering path.** `.card-glyphs` lives in the card
+  head and CSS re-dresses it per tier exactly as the card itself is re-dressed: a quiet row
+  beside the title at reading range, counter-scaled with the title card at thread range, and
+  at cloth range lifted above the knot as **the constellation**. Verified at z=0.05: the
+  atoms sit above each square, screen-constant, and the answer to "where did this thought
+  appear?" is legible without reading anything.
+- **Cloth captions are now a policy, and it is toggleable** (`tiers.ts CAPTIONS_AT_CLOTH`,
+  toolbar `captions`). Glyph-caption collision was already a known cosmetic failure
+  (FINDINGS Q4); critique-ledger item 6 proposed resolving it by design — at cloth altitude
+  a caption is a REGION LABEL, so only cards a named thread holds keep one. Default is the
+  candidate (suppressed), on the same principle stage 2 used for the topology toggle: the
+  session should react to the hypothesis, not to the control. The glyph atoms are drawn
+  either way, which is the actual §7.6 experiment.
+- **Selection is the thread inversion idiom, deliberately identical** (critique-ledger item
+  8 asked for that idiom to be canonical). Clicking any stamp — margin, head, or toolbar
+  chip — lights every card holding that glyph and recedes the rest. A chip click also frames
+  the constellation; a click on a stamp in a card does not move the camera, because you are
+  reading. **A glyph selection and a thread selection are mutually exclusive** and clear each
+  other through two wiring lines in `main.ts`: they claim the same inversion, and two lit
+  selections would be two answers to one question.
+- **No edges from a glyph to its cards.** Ideation §7.6 floats them; §9.3 answers it — "the
+  tie of the edge" is the anti-pattern at scale. The set IS the binding and selection is how
+  you see it. Twenty edges from one card would bury the trail the board is about.
+- **The glyph file is written through the Host seam on a 220ms debounce**:
+  `host.writeFile("marks/star.md", …)`, which under the localStorage host lands at the key
+  `loom:marks/star.md` — that IS the file seam in this prototype (`host.ts storageKey`); on
+  a File System Access host it is a real file and nothing in `glyphs.ts` changes. Content is
+  ordered quotes with source refs, in STAMP order (the order the thought accrued, not
+  grouped by card — the recurrence across places is the point). Regenerated wholesale rather
+  than patched, and a glyph whose last stamp is removed gets a final write saying so rather
+  than being left stale.
+- **The glyph file IS placeable, and it cost one modeled field.** `LoomNode.glyphFile` marks
+  a note-shaped card as a *rendering* of `marks/<name>.md`; `cards.ts` leaves it read-only
+  (a note is editable, a rendering is not — typing into a file that is about to be
+  overwritten is a lie), `glyphs.ts` rewrites its text whenever the collection changes, and
+  the fiber pill refuses to mark it. That was the whole cost, so the brief's "only if it
+  drops out nearly free" was met; without the read-only field it would not have been.
+- **`removeNode` drops a card's stamps without ceremony** — deliberately unlike a thread. A
+  thread is an ordered line whose NAME must survive a hole (wave-2 §1's hard constraint); a
+  glyph is an unordered set, so losing one of its places leaves the rest meaning exactly what
+  it meant. The file regenerates one entry shorter. No break record.
+- **Codec.** `glyphs` is a collection parallel to `marks`, not a widened `Mark.kind`: one
+  list would have made both queries scan the other's rows and would have put two species
+  under one word. The key is omitted entirely when empty, so a board that never used the
+  palette keeps its exact shape and the fixpoint holds (absent reads as `[]`, `[]` writes as
+  absent). A stamp with no `prov` backfills to `how:"mark"` — `readProv` gained a `how`
+  fallback for exactly this, applied only when the file did not say.
+  - **A foreign glyph name is NOT coerced into the palette.** Coercing would silently merge
+    two collections and dropping would be the one un-additive act in the codec; it rides
+    through, draws as its own initial, and gets its own toolbar chip.
+  - A stamp whose `nodeId` is not on the board is kept (marks behave the same; edges do not,
+    because an edge with no ends cannot be drawn at all).
+- **Verified.** `npm run build` clean. A compiled-to-node harness (**47 assertions**, all
+  pass) over the real `Out/p0-agent-thread/board.canvas` and `Out/sample-board.canvas` plus a
+  hostile synthetic board: both wave-1 boards load unchanged and gain no `glyphs` key; the
+  codec is still a fixpoint with stamps, foreign glyph names, foreign prov keys, foreign
+  top-level keys and a `glyphFile` node present; an agent-authored stamp keeps `by:"agent"`.
+  Then in-browser on the sample board: stamped four passages across three cards through the
+  pill (single click from the second on), margin atoms and head badges drawn, fiber marks
+  untouched, `loom:marks/star.md` and `loom:marks/lozenge.md` written and rewritten on every
+  change, glyph selected as a unit (thread selection cleared, note and file card receded),
+  `c` handed off the whole collection, `file…` placed a read-only `marks/star.md` card that
+  then grew with the next stamp, cloth range showed the constellation with captions muted for
+  the two cards outside the named thread, the `captions` toggle put them back and took them
+  away again, un-stamping emptied a glyph and rewrote its file honestly, and a reload restored
+  every stamp, mark and drawing with zero console errors. The pane's board was cleared back
+  to its fresh seed afterwards.
+- **Not done, deliberately:** dedup of two identical glyph atoms in one paragraph (two stamps
+  are two locations, and the stack tells the truth); a glyph RENAME or a sixth glyph from the
+  UI (the palette is a fixed vocabulary under test — the codec tolerates more, the chrome
+  offers five); stamping from the keyboard (the gesture is "select text", a mouse gesture by
+  construction, exactly as the fiber pill is); marks or stamps on a glyph-file card; composer
+  elision for glyph quotes (wave-2 §4 owns the elision convention — this handoff prints full
+  quotes, consistent with the thread handoff it sits beside); any prov UI (§8.3 stays out of
+  wave 2); and the ideation §9.3 "skein" reading of glyph-as-set — the set is an
+  implementation fact here, not a surfaced concept.

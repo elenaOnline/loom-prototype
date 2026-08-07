@@ -14,6 +14,7 @@ import type {
   ContentMode,
   EdgeKind,
   Foreign,
+  GlyphStamp,
   LoomEdge,
   LoomNode,
   Mark,
@@ -50,11 +51,12 @@ type Json = Record<string, unknown>;
 // file that states them keeps its own.
 
 const NODE_BASE_KEYS = ["id", "type", "x", "y", "width", "height", "x-powerset"];
-const NODE_EXT_KEYS = new Set(["kind", "title", "ref", "prov"]);
+const NODE_EXT_KEYS = new Set(["kind", "title", "ref", "glyphFile", "prov"]);
 const EDGE_BASE_KEYS = new Set(["id", "fromNode", "toNode", "label", "x-powerset"]);
 const EDGE_EXT_KEYS = new Set(["kind", "prov"]);
 const THREAD_KEYS = new Set(["id", "name", "nodeIds", "pinned", "broken", "prov"]);
 const MARK_KEYS = new Set(["id", "nodeId", "quote", "kind", "noteNodeId"]);
+const GLYPH_KEYS = new Set(["id", "glyph", "nodeId", "quote", "prov"]);
 const BOARD_BASE_KEYS = new Set(["nodes", "edges", "x-powerset"]);
 const BOARD_EXT_KEYS = new Set([
   "version",
@@ -63,6 +65,7 @@ const BOARD_EXT_KEYS = new Set([
   "folderName",
   "threads",
   "marks",
+  "glyphs",
 ]);
 
 /** the payload key a node of this kind carries is ours; on any other kind it is not */
@@ -127,7 +130,15 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
     if (n.kind === "doc") base["file"] = n.ref;
     if (n.kind === "note") base["text"] = n.text ?? "";
     replay(base, n.foreign?.top);
-    const ext: Json = { kind: n.kind, title: n.title, ref: n.ref, prov: provOut(n.prov) };
+    const ext: Json = {
+      kind: n.kind,
+      title: n.title,
+      ref: n.ref,
+      // written only when the card IS a glyph file's window (wave-2 §2), so an
+      // ordinary note's entry keeps the shape every earlier wave wrote
+      ...(n.glyphFile === undefined ? {} : { glyphFile: n.glyphFile }),
+      prov: provOut(n.prov),
+    };
     replay(ext, n.foreign?.ext);
     base["x-powerset"] = ext;
     return base;
@@ -173,6 +184,23 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
     return out;
   });
 
+  // The glyph collection: parallel to `marks`, not folded into it. A fiber is a
+  // passage kept where it was found; a glyph is a passage claimed by a thought
+  // that recurs elsewhere. One is per-card, the other is per-glyph — a single
+  // list with a widened `kind` would have made both queries scan the other's
+  // rows and would have put two different species under one word.
+  const glyphs: Json[] = snapshot.glyphs.map((g) => {
+    const out: Json = {
+      id: g.id,
+      glyph: g.glyph,
+      nodeId: g.nodeId,
+      quote: g.quote,
+      prov: provOut(g.prov),
+    };
+    replay(out, g.foreign);
+    return out;
+  });
+
   const ext: Json = {
     version: 1,
     topologyMode: snapshot.topologyMode,
@@ -180,6 +208,10 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
     ...(snapshot.folderName === undefined ? {} : { folderName: snapshot.folderName }),
     threads,
     marks,
+    // omitted entirely on a board with no stamps, so wave-1 boards and boards
+    // that never used the palette keep their exact shape (fixpoint preserved:
+    // absent reads back as [], which writes back as absent)
+    ...(glyphs.length === 0 ? {} : { glyphs }),
   };
   replay(ext, snapshot.foreign?.ext);
 
@@ -253,6 +285,7 @@ export function fromCanvas(raw: unknown): Partial<BoardSnapshot> | null {
     edges,
     threads: readThreads(ext["threads"]),
     marks: readMarks(ext["marks"]),
+    glyphs: readGlyphs(ext["glyphs"]),
     topologyMode: readTopology(ext["topologyMode"]),
     contentMode: readContent(ext["contentMode"]),
   };
@@ -301,6 +334,8 @@ function readNode(raw: unknown): LoomNode | null {
   };
   const text = str(raw["text"]);
   if (kind === "note" && text !== undefined) node.text = text;
+  const glyphFile = str(ext["glyphFile"]);
+  if (glyphFile !== undefined) node.glyphFile = glyphFile;
   const foreign = foreignOf(raw, nodeOwnedKeys(kind), ext, NODE_EXT_KEYS);
   if (foreign) node.foreign = foreign;
   return node;
@@ -405,6 +440,38 @@ function readMarks(raw: unknown): Mark[] {
 }
 
 /**
+ * The glyph collection, liberal on read. Two deliberate liberties:
+ *   · the glyph NAME is never narrowed to the five-glyph palette. A file may
+ *     carry a sixth; coercing it would silently merge two collections, and
+ *     dropping it would be the one un-additive act in the codec. It rides
+ *     through and draws as its own initial (`model.glyphChar`).
+ *   · a stamp whose `nodeId` is not on the board is KEPT (marks behave the same;
+ *     edges do not, because an edge with no ends cannot be drawn at all). It
+ *     simply draws nothing until that card comes back.
+ */
+function readGlyphs(raw: unknown): GlyphStamp[] {
+  const out: GlyphStamp[] = [];
+  for (const item of asArray(raw)) {
+    if (!isObject(item)) continue;
+    const id = str(item["id"]);
+    const glyph = str(item["glyph"]);
+    const nodeId = str(item["nodeId"]);
+    if (!id || !glyph || !nodeId) continue;
+    const stamp: GlyphStamp = {
+      id,
+      glyph,
+      nodeId,
+      quote: str(item["quote"]) ?? "",
+      prov: readProv(item["prov"], { from: nodeId, how: "mark" }),
+    };
+    const foreign = pickForeign(item, GLYPH_KEYS);
+    if (foreign) stamp.foreign = foreign;
+    out.push(stamp);
+  }
+  return out;
+}
+
+/**
  * Provenance, liberal on read. Absent → the brief's backfill shape
  * (`human · wander · at: null`) with the caller's positional fallback standing
  * in for the birthplace. Present → taken as written, including keys this build
@@ -413,12 +480,19 @@ function readMarks(raw: unknown): Mark[] {
  */
 function readProv(
   raw: unknown,
-  fallback?: { x0?: number; y0?: number; from?: string | null },
+  fallback?: { x0?: number; y0?: number; from?: string | null; how?: ProvHow },
 ): Prov {
+  // the caller's `how` fallback only ever applies to an object that DID NOT say:
+  // a glyph stamp with no recorded provenance was still a `mark`, not a wander
+  const how0: ProvHow = fallback?.how ?? "wander";
   if (!isObject(raw)) {
     return backfillProv({
       by: "human",
-      how: "wander",
+      how: how0,
+      // NB: `from` is deliberately NOT taken from the fallback here. Stage 0's
+      // fallback rule is about an absent KEY inside a prov block that exists;
+      // an object with no prov block at all backfills to `from: null`, and that
+      // is the shape its first save has already been verified against.
       ...(fallback?.x0 === undefined ? {} : { x0: fallback.x0 }),
       ...(fallback?.y0 === undefined ? {} : { y0: fallback.y0 }),
     });
@@ -426,7 +500,7 @@ function readProv(
   const seed: Record<string, unknown> = { ...raw };
   seed["at"] = typeof raw["at"] === "string" ? raw["at"] : null;
   const by: ProvBy = PROV_BY.find((v) => v === raw["by"]) ?? "human";
-  const how: ProvHow = PROV_HOW.find((v) => v === raw["how"]) ?? "wander";
+  const how: ProvHow = PROV_HOW.find((v) => v === raw["how"]) ?? how0;
   seed["by"] = by;
   seed["how"] = how;
   // an explicit `from: null` MEANS null; only a missing key takes the fallback,

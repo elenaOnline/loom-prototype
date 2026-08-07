@@ -38,6 +38,9 @@ export interface TierLayer {
   tier(): Tier;
   /** the altitude word the metaphor promises — fiber · thread · cloth */
   word(): string;
+  /** cloth-range caption policy (see CAPTIONS_AT_CLOTH) — reversible, by design */
+  captions(): boolean;
+  setCaptions(on: boolean): void;
   destroy(): void;
 }
 
@@ -63,6 +66,24 @@ const DOWN = 1 - HYSTERESIS / 2;
 
 /** how much viewport-worth of slack around the screen stays un-culled */
 const CULL_MARGIN = 0.5;
+
+/**
+ * CLOTH-RANGE CAPTION POLICY (critique-ledger item 6, tested here because
+ * wave-2 §2 needs an answer to "what is legible at cloth range" before the
+ * glyph constellation means anything).
+ *
+ * Glyph captions collide when cards cluster — observed in the wild, FINDINGS
+ * Q4. The candidate is to resolve it BY DESIGN rather than by layout: at cloth
+ * altitude a caption is a REGION LABEL, so only cards that belong to a named
+ * thread keep theirs and everything else is mute geography. The glyph atoms
+ * (glyphs.ts) are unaffected — that is the point of the experiment: with the
+ * captions gone, what remains legible on the weave is the constellation.
+ *
+ * Default is the candidate (suppressed), on the same principle stage 2 used for
+ * the topology toggle: the session should react to the hypothesis, not to the
+ * control. Reversible from the toolbar (`captions`), per ideation §7's meta-rule.
+ */
+const CAPTIONS_AT_CLOTH = false;
 
 const TIER_CLASS: Record<Tier, string> = {
   full: "tier-full",
@@ -93,6 +114,8 @@ interface Painted {
   tier: Tier | null;
   culled: boolean;
   marks: number;
+  /** caption suppressed at cloth range (see CAPTIONS_AT_CLOTH) */
+  mute: boolean;
   /** where the reader was in this body when culling took its layout away */
   scroll: number;
 }
@@ -101,7 +124,17 @@ export function createTierLayer(options: TierLayerOptions): TierLayer {
   const { viewport, board, camera, edges } = options;
 
   let tier: Tier = tierFor(camera.z, "full");
+  let captions = CAPTIONS_AT_CLOTH;
   const painted = new Map<string, Painted>();
+
+  /** every card a NAMED thread holds — the only cards that keep a cloth caption */
+  function labelled(): Set<string> {
+    const out = new Set<string>();
+    for (const thread of board.threads()) {
+      for (const id of thread.nodeIds) out.add(id);
+    }
+    return out;
+  }
 
   // ---- geometry -----------------------------------------------------------
 
@@ -210,6 +243,7 @@ export function createTierLayer(options: TierLayerOptions): TierLayer {
 
     const view = tier === "full" ? visibleWorld() : null;
     const counts = tier === "title" ? markCounts() : null;
+    const named = tier === "glyph" && !captions ? labelled() : null;
     const seen = new Set<string>();
 
     for (const node of board.nodes()) {
@@ -219,7 +253,7 @@ export function createTierLayer(options: TierLayerOptions): TierLayer {
 
       let state = painted.get(node.id);
       if (!state) {
-        state = { tier: null, culled: false, marks: 0, scroll: 0 };
+        state = { tier: null, culled: false, marks: 0, mute: false, scroll: 0 };
         painted.set(node.id, state);
       }
 
@@ -236,6 +270,13 @@ export function createTierLayer(options: TierLayerOptions): TierLayer {
 
       const culled = view ? !overlaps(node.x, node.y, node.width, node.height, view) : false;
       if (culled !== state.culled) setCulled(el, state, culled);
+
+      const mute = named !== null && !named.has(node.id);
+      if (mute !== state.mute) {
+        if (mute) el.setAttribute("data-mute", "");
+        else el.removeAttribute("data-mute");
+        state.mute = mute;
+      }
 
       if (counts) {
         const count = counts.get(node.id) ?? 0;
@@ -261,6 +302,12 @@ export function createTierLayer(options: TierLayerOptions): TierLayer {
   return {
     tier: () => tier,
     word: () => TIER_WORD[tier],
+    captions: () => captions,
+    setCaptions(on) {
+      if (captions === on) return;
+      captions = on;
+      paint();
+    },
     destroy() {
       unwatchCamera();
       unwatchBoard();
@@ -270,6 +317,7 @@ export function createTierLayer(options: TierLayerOptions): TierLayer {
         if (!el) continue;
         if (state.tier) el.classList.remove(TIER_CLASS[state.tier]);
         el.classList.remove("card-culled");
+        el.removeAttribute("data-mute");
         el.querySelector(".card-marks")?.remove();
       }
       painted.clear();

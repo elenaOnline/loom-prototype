@@ -15,6 +15,7 @@ import { createTrail } from "./trail";
 import { createThreadLayer } from "./threads";
 import { createTierLayer } from "./tiers";
 import { createFiberLayer } from "./fibers";
+import { createGlyphLayer } from "./glyphs";
 import { createUi } from "./ui";
 import { createWikiSource } from "./providers/wiki";
 import { createFolderSource, type FolderSource } from "./providers/folder";
@@ -117,6 +118,9 @@ const threads = createThreadLayer({
   onStatus: (text) => ui.status(text),
   onSelectionChange: (selection) => {
     ui.setActiveThread(selection?.threadId ?? null, threads.pulled());
+    // two species of thread, one cloth: a trail selection and a glyph selection
+    // both claim the same inversion, so only one of them may be lit at a time
+    if (selection) glyphs.clear();
   },
 });
 
@@ -146,11 +150,19 @@ const ui = createUi({
   onPull: () => threads.togglePull(),
   onPin: () => threads.togglePin(),
   onThreadPick: (id) => threads.selectThread(id),
+  onGlyphPick: (glyph) => {
+    // a chip is a "show me where this thought went" gesture, so it frames the
+    // constellation; clicking a stamp on the cloth does not move the camera
+    if (glyphs.selected() === glyph) glyphs.clear();
+    else glyphs.select(glyph);
+  },
+  onGlyphFile: () => glyphs.placeFile(),
+  onCaptions: (on) => tiers.setCaptions(on),
 });
 
 // after ui: the tier layer reports its altitude the moment it is built, and it
 // must paint after the card layer has built the DOM for a change (listener order)
-createTierLayer({
+const tiers = createTierLayer({
   viewport,
   board,
   camera,
@@ -159,8 +171,8 @@ createTierLayer({
   onTier: (_tier, word) => ui.setTier(word),
 });
 
-// last of the layers: fibers reads the tier class the line above writes, and its
-// board listener must run after the card layer has (re)built the body it marks
+// fibers reads the tier class the line above writes, and its board listener must
+// run after the card layer has (re)built the body it marks
 createFiberLayer({
   board,
   camera,
@@ -169,6 +181,23 @@ createFiberLayer({
   getCardEl: (id) => cards.element(id),
   getInsets: insets,
   onStatus: (text) => ui.status(text),
+});
+
+// last: the glyph layer decorates the same bodies fibers does, and the two must
+// not fight — each unwraps only its own class, so order is a preference, not a
+// contract. It goes last so a stamp drawn on a freshly built card is the final
+// word about that body.
+const glyphs = createGlyphLayer({
+  board,
+  camera,
+  viewport,
+  host,
+  getCardEl: (id) => cards.element(id),
+  onStatus: (text) => ui.status(text),
+  onSelect: (glyph) => {
+    ui.setActiveGlyph(glyph);
+    if (glyph) threads.clear();
+  },
 });
 
 const autosave = createAutosave({
@@ -282,15 +311,18 @@ function seedIfEmpty(): void {
 }
 
 /**
- * Handoff, widest grasp first: a selected thread goes as a whole line of
- * thought (name + ordered refs + marks); otherwise the one selected card.
+ * Handoff, widest grasp first: a selected GLYPH goes as its whole collection
+ * (the glyph, then every quote with its ref — a thought and everywhere it
+ * appeared); a selected thread goes as a whole line of thought (name + ordered
+ * refs + marks); otherwise the one selected card.
  */
 function handOffSelection(): void {
+  if (glyphs.handOff()) return;
   if (threads.handOff()) return;
   const id = cards.selected();
   const node = id ? board.node(id) : undefined;
   if (!node) {
-    ui.status("select a thread (click one of its edges) or a card, then press c");
+    ui.status("select a thread, a glyph, or a card, then press c");
     return;
   }
   const target =

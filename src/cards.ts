@@ -81,6 +81,7 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     el.className = "card";
     el.dataset["nodeId"] = node.id;
     el.dataset["kind"] = node.kind;
+    if (node.glyphFile !== undefined) el.dataset["glyphFile"] = node.glyphFile;
     el.style.zIndex = String(++topZ);
 
     const head = document.createElement("header");
@@ -104,8 +105,12 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
 
     const body = document.createElement("div");
     body.className = "card-body";
-    // a note is written, not fetched: its body IS the editor (fibers, stage 5)
-    if (node.kind === "note") makeEditable(body);
+    // a note is written, not fetched: its body IS the editor (fibers, stage 5).
+    // A GLYPH FILE card is the exception — it is a note-shaped *rendering* of
+    // `marks/<glyph>.md`, rewritten from the board whenever the collection
+    // changes, so typing into it would be typing into a file that is about to
+    // be overwritten. It stays readable and stays read-only (wave-2 §2).
+    if (node.kind === "note" && node.glyphFile === undefined) makeEditable(body);
 
     el.append(head, body);
     return el;
@@ -138,7 +143,9 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     title.textContent = node.title || node.ref || "untitled";
     const source = options.getSource();
     const label =
-      node.kind === "note"
+      node.glyphFile !== undefined
+        ? `glyph file · ${node.glyphFile}`
+        : node.kind === "note"
         ? "note"
         : source && source.nodeKind === node.kind
           ? source.label(node.ref)

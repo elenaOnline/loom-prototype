@@ -398,6 +398,154 @@ body {
 .card[data-kind="note"][data-selected] .card-title,
 .card[data-kind="note"][data-thread="in"] .card-title { color: var(--paper); }
 
+/* --------------------------------------------------------------- glyphs --- */
+/* MEANING-MARKS (wave-2 §2). A fiber is drawn in the SIGNAL role — "I kept this
+   sentence, here". A glyph is drawn in INK — "this sentence is one instance of a
+   thought that recurs elsewhere". Two species, two roles, no third colour and no
+   badge: the stamp is a dotted hairline under the words and a bare mark in the
+   margin beside them.
+
+   The atom carries its character in a CSS custom property rather than as text.
+   That is not decoration: fibers.ts and glyphs.ts both anchor quotes by indexing
+   a card body's TEXT, and one stray "●" in the flow would shift every later
+   match by a character. Nothing either layer inserts may contribute text. */
+
+.glyph-atom {
+  display: inline-block;
+  font-family: var(--mono);
+  line-height: 1;
+  color: currentColor;
+  user-select: none;
+}
+
+.glyph-atom::before { content: var(--glyph-char, "\25CF"); }
+
+/* the stamped passage: dotted, ink — quieter than a fiber's solid signal rule */
+.glyph-mark {
+  border-bottom: 1px dotted var(--ink);
+  cursor: pointer;
+}
+
+.card[data-thread="out"] .glyph-mark { border-bottom-color: var(--ghost); }
+
+/* the margin mark rides beside the BLOCK the passage starts in (a paragraph, a
+   list item), not beside the exact line: stable across every reflow, and it is
+   what a marginal mark has always been. The card widens its own left gutter
+   only when it carries stamps, so unmarked prose keeps its full measure. */
+.glyph-row { position: relative; }
+
+.glyph-margin {
+  position: absolute;
+  left: -1.05rem;
+  top: 0.15em;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font-size: 11px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.glyph-margin-inline {
+  position: static;
+  display: inline-flex;
+  flex-direction: row;
+  margin-right: 0.25em;
+}
+
+.card[data-glyphs] .card-body { padding-left: 1.55rem; }
+
+/* the head badge — one atom per distinct glyph, with its count */
+.card-glyphs {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 0.3rem;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+}
+
+.glyph-cell { display: inline-flex; align-items: center; gap: 1px; }
+
+.glyph-count {
+  font-size: 9px;
+  color: var(--s2);
+  font-variant-numeric: tabular-nums;
+}
+
+.card[data-selected] .glyph-count,
+.card[data-ping] .glyph-count,
+.card[data-thread="in"] .glyph-count,
+.card[data-glyphsel="in"] .glyph-count { color: var(--ghost); }
+
+/* SELECTION AS A UNIT — the same inversion idiom threads use, because a glyph is
+   the same kind of object: a set of places held together by a name. The cards
+   holding it come forward; everything else recedes; other glyphs go quiet. */
+.card[data-glyphsel="in"] .card-head {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.card[data-glyphsel="in"] .card-kind,
+.card[data-glyphsel="in"] .card-unpin { color: var(--ghost); }
+
+.card[data-glyphsel="out"] {
+  border-color: var(--ghost);
+  color: var(--s2);
+}
+
+.card[data-glyphsel="out"] .card-head { border-bottom-color: var(--ghost); }
+.card[data-glyphsel="out"] .card-title { color: var(--s2); }
+.card[data-glyphsel="out"] .card-body,
+.card[data-glyphsel="out"] .card-body a { color: var(--s2); }
+
+.glyph-margin .glyph-atom[data-sel="in"] {
+  background: var(--ink);
+  color: var(--paper);
+  padding: 1px;
+}
+
+.glyph-atom[data-sel="out"] { color: var(--ghost); }
+/* an unselected glyph on a card that IS selected: dim, not bright-on-dark */
+.card[data-glyphsel="in"] .card-glyphs .glyph-atom[data-sel="out"] { color: var(--s2); }
+
+.glyph-mark[data-sel="in"] { border-bottom-style: solid; border-bottom-color: var(--ink); }
+.glyph-mark[data-sel="out"] { border-bottom-color: var(--ghost); }
+
+/* a glyph FILE card: a note-shaped window on marks/<name>.md, not a note.
+   Read-only by construction (cards.ts) and it says so by being mono all through. */
+.card[data-glyph-file] .card-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-style: normal;
+  color: var(--ink);
+}
+
+.card[data-glyph-file] .card-body { cursor: default; }
+.card[data-glyph-file][data-selected] .card-title,
+.card[data-glyph-file][data-thread="in"] .card-title { color: var(--paper); }
+
+/* the palette inside the pill — five buttons, no dialog, no naming step */
+.fiber-palette { display: flex; }
+.fiber-palette[hidden] { display: none; }
+
+.fiber-pill .fiber-open { border-left: 1px solid var(--ink); }
+
+.fiber-pill .fiber-glyph {
+  min-width: 22px;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* a glyph this passage already carries: inverted, and pressing it un-stamps */
+.fiber-pill button[data-active] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
 /* the select-text pill — screen space, hairline, three verbs, no ceremony */
 .fiber-pill {
   position: absolute;
@@ -494,6 +642,11 @@ body {
 
 .card.tier-title[data-thread="out"] .card-marks { color: var(--s2); }
 
+/* the glyphs grow with the title card: at this altitude they are the second
+   thing written on the sheet, after its name */
+.card.tier-title .card-glyphs { font-size: min(46px, calc(11px / var(--z, 1))); }
+.card.tier-title .glyph-count { font-size: min(38px, calc(9px / var(--z, 1))); }
+
 /* --- glyph (cloth) — the card is a knot; the edges are the subject --- */
 
 .card.tier-glyph {
@@ -527,12 +680,14 @@ body {
   pointer-events: auto;
 }
 
-.card.tier-glyph[data-thread="out"] .card-head { border-color: var(--ghost); }
+.card.tier-glyph[data-thread="out"] .card-head,
+.card.tier-glyph[data-glyphsel="out"] .card-head { border-color: var(--ghost); }
 
 /* re-stated at glyph specificity: state is still a filled atom, never a tint */
 .card.tier-glyph[data-selected] .card-head,
 .card.tier-glyph[data-ping] .card-head,
-.card.tier-glyph[data-thread="in"] .card-head { background: var(--ink); }
+.card.tier-glyph[data-thread="in"] .card-head,
+.card.tier-glyph[data-glyphsel="in"] .card-head { background: var(--ink); }
 
 /* the label is a caption on the knot, not a target: it must never eat a drag
    on the paper it happens to overhang */
@@ -558,6 +713,34 @@ body {
 
 .card.tier-glyph[data-selected] .card-title,
 .card.tier-glyph[data-thread="in"] .card-title { color: var(--ink); }
+
+/* THE CONSTELLATION (wave-2 §2). At cloth range the stamps lift off the knot
+   and sit above it, screen-constant: the board answers "where did this thought
+   appear?" by being looked at rather than read. They are drawn whether or not
+   the caption survives the policy below — that IS the experiment. */
+.card.tier-glyph .card-glyphs {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translate(-50%, 0);
+  padding-bottom: calc(4px / var(--z, 1));
+  gap: calc(3px / var(--z, 1));
+  font-size: calc(13px / var(--z, 1));
+  white-space: nowrap;
+  pointer-events: auto;
+  /* the constellation floats over PAPER, not over the inverted knot, so it
+     takes ink explicitly rather than inheriting the head's selection colour */
+  color: var(--ink);
+}
+
+.card.tier-glyph .glyph-count { display: none; }
+.card.tier-glyph[data-glyphsel="out"] .card-glyphs { color: var(--ghost); }
+
+/* CLOTH CAPTION POLICY (tiers.ts CAPTIONS_AT_CLOTH, toolbar `captions`). Glyph
+   captions collide when cards cluster; the candidate resolves it by design — at
+   this altitude a caption is a REGION LABEL, so only cards a named thread holds
+   keep one and everything else is mute geography. */
+.card.tier-glyph[data-mute] .card-head-stack { display: none; }
 
 /* -------------------------------------------------------------- toolbar --- */
 
@@ -636,6 +819,35 @@ body {
 }
 
 .tb-empty { color: var(--ghost); }
+
+/* the glyph palette in the strip: the mark itself, and how many passages carry
+   it. A glyph the board has never used stays visible but ghosted — a vocabulary
+   you cannot see is one you never reach for. */
+.tb-glyphs {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.tb-glyph {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tb-glyph .glyph-atom { font-size: 11px; }
+.tb-glyph[data-empty] { color: var(--ghost); border-color: var(--ghost); }
+.tb-glyph[data-empty]:hover { color: var(--ink); border-color: var(--ink); }
+
+.tb-button:disabled {
+  color: var(--ghost);
+  border-color: var(--ghost);
+  cursor: default;
+}
+
+.tb-button:disabled:hover { border-color: var(--ghost); }
 
 /* Thread state on a chip is GEOMETRY, never a tint (wave-2 §1): a filled atom
    says pinned — this membership is frozen; a dashed chip says broken — this

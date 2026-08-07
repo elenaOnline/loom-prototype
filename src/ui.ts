@@ -7,7 +7,7 @@
 
 import type { Camera } from "./camera";
 import type { Board, ContentMode, TopologyMode } from "./model";
-import { TOPOLOGY_MODES } from "./model";
+import { GLYPH_PALETTE, TOPOLOGY_MODES, glyphChar } from "./model";
 import type { SaveState } from "./codec";
 
 export interface Ui {
@@ -15,6 +15,8 @@ export interface Ui {
   setSaveState(state: SaveState, detail?: string): void;
   /** the thread list is a readout of the model; this is only its highlight */
   setActiveThread(threadId: string | null, pulled: boolean): void;
+  /** which glyph is selected as a unit, if any */
+  setActiveGlyph(glyph: string | null): void;
   /** the altitude word from tiers.ts — fiber · thread · cloth */
   setTier(word: string): void;
   refresh(): void;
@@ -37,6 +39,12 @@ export interface UiOptions {
   /** freeze / unfreeze the selected thread's membership (wave-2 §1) */
   onPin: () => void;
   onThreadPick: (threadId: string) => void;
+  /** light every place this glyph was stamped (wave-2 §2) */
+  onGlyphPick: (glyph: string) => void;
+  /** put the selected glyph's `marks/<name>.md` on the board */
+  onGlyphFile: () => void;
+  /** cloth-range caption policy — the reversible half of the §7.6 experiment */
+  onCaptions: (on: boolean) => void;
 }
 
 const TOPOLOGY_HINT: Record<TopologyMode, string> = {
@@ -73,6 +81,17 @@ export function createUi(options: UiOptions): Ui {
     topoGroup.appendChild(b);
   });
 
+  // the meaning-mark palette (wave-2 §2). A chip is the glyph itself plus how
+  // many passages carry it — the whole readout of a collection in six pixels.
+  // Chips for glyphs with no stamps stay visible but ghosted: the palette is
+  // the vocabulary, and a vocabulary you cannot see is one you never reach for.
+  const glyphGroup = group("glyph");
+  const glyphList = document.createElement("span");
+  glyphList.className = "tb-glyphs";
+  const glyphFileButton = button("file…", () => options.onGlyphFile());
+  glyphFileButton.title = "place the selected glyph's marks/<name>.md on the board";
+  glyphGroup.append(glyphList, glyphFileButton);
+
   const threadGroup = group("thread");
   const pullButton = button("pull taut", () => options.onPull());
   pullButton.title = "t — gather the selected thread onto an even arc (reversible)";
@@ -86,6 +105,21 @@ export function createUi(options: UiOptions): Ui {
 
   const boardGroup = group("board");
   boardGroup.appendChild(button("fit", () => camera.zoomToFit()));
+  // reversible by construction (ideation §7 meta-rule): the caption policy is a
+  // candidate under test, so the session can put the labels back in one click
+  let captionsOn = false;
+  const captionButton = button("captions", () => {
+    captionsOn = !captionsOn;
+    toggle(captionButton, captionsOn);
+    options.onCaptions(captionsOn);
+    status(
+      captionsOn
+        ? "cloth captions: every card labelled (the control)"
+        : "cloth captions: named threads only — glyphs still show (the candidate)",
+    );
+  });
+  captionButton.title = "at cloth range, label every card — off: only cards in a named thread";
+  boardGroup.appendChild(captionButton);
   boardGroup.appendChild(button("new", () => options.onNewBoard()));
   const saveButton = button("save…", () => options.onSaveToDisk());
   saveButton.title = "write board.canvas to a file — and keep writing it";
@@ -106,6 +140,7 @@ export function createUi(options: UiOptions): Ui {
     brand,
     modeGroup,
     topoGroup,
+    glyphGroup,
     threadGroup,
     boardGroup,
     statusEl,
@@ -129,6 +164,7 @@ export function createUi(options: UiOptions): Ui {
 
   let activeThread: string | null = null;
   let isPulled = false;
+  let activeGlyph: string | null = null;
 
   function refresh(): void {
     const topology = board.topologyMode();
@@ -144,8 +180,54 @@ export function createUi(options: UiOptions): Ui {
       count(board.nodes().length, "card"),
       count(board.threads().length, "thread"),
       count(board.marks().length, "mark"),
+      count(board.glyphs().length, "stamp"),
     ].join(" · ");
     refreshThreads();
+    refreshGlyphs();
+  }
+
+  /**
+   * The palette, as a readout. The five chips are always present (a vocabulary
+   * has to be visible to be reached for); a glyph the board has never used is
+   * ghosted, one with stamps carries its count, and the selected one inverts —
+   * the same idiom the thread chips use, because it is the same kind of object.
+   * A glyph a FILE brought that this build's palette does not offer gets a chip
+   * too, so nothing on the board is invisible in the chrome.
+   */
+  function refreshGlyphs(): void {
+    const counts = new Map<string, number>();
+    for (const stamp of board.glyphs()) {
+      counts.set(stamp.glyph, (counts.get(stamp.glyph) ?? 0) + 1);
+    }
+    const names = GLYPH_PALETTE.map((g) => g.name);
+    for (const name of counts.keys()) if (!names.includes(name)) names.push(name);
+
+    const frag = document.createDocumentFragment();
+    for (const name of names) {
+      const n = counts.get(name) ?? 0;
+      const b = button("", () => options.onGlyphPick(name));
+      b.className = "tb-button tb-glyph";
+      const mark = document.createElement("span");
+      mark.className = "glyph-atom";
+      mark.dataset["glyph"] = name;
+      mark.style.setProperty("--glyph-char", JSON.stringify(glyphChar(name)));
+      b.appendChild(mark);
+      if (n > 0) b.appendChild(document.createTextNode(String(n)));
+      else b.setAttribute("data-empty", "");
+      b.title =
+        n === 0
+          ? `${glyphChar(name)} ${name} — unused · select text in a card and press "mark ▸"`
+          : `${glyphChar(name)} ${name} — ${count(n, "passage")} · marks/${name}.md`;
+      toggle(b, name === activeGlyph);
+      frag.appendChild(b);
+    }
+    glyphList.replaceChildren(frag);
+    glyphFileButton.disabled = activeGlyph === null;
+  }
+
+  function setActiveGlyph(glyph: string | null): void {
+    activeGlyph = glyph;
+    refreshGlyphs();
   }
 
   /** the list IS the model's thread array — kept names, in the order kept */
@@ -259,6 +341,7 @@ export function createUi(options: UiOptions): Ui {
     status,
     setSaveState,
     setActiveThread,
+    setActiveGlyph,
     setTier,
     refresh,
     destroy() {

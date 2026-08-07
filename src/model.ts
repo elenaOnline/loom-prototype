@@ -136,6 +136,13 @@ export interface LoomNode {
   height: number;
   /** notes only — persisted */
   text?: string;
+  /**
+   * This card is the RENDERING of a glyph file (`marks/<glyphFile>.md`), not a
+   * note somebody wrote: its text is regenerated from the board whenever that
+   * glyph's collection changes, and it is therefore not editable in place. The
+   * file is still the source of truth — the card is a window onto it.
+   */
+  glyphFile?: string;
   /** sanitized body HTML — transient, re-fetched on load */
   html?: string;
   status: LoadStatus;
@@ -244,11 +251,80 @@ export interface MarkSpec {
   id?: string;
 }
 
+/**
+ * A GLYPH: one mark in the meaning-thread palette (wave-2 §2, ideation §7.6).
+ *
+ * A trail records *movement* — where attention went. A glyph records *meaning* —
+ * a thought that recurs in several places. Same substrate, second species: you
+ * stamp the same glyph on a passage in card A, another in card B, a third back
+ * in A, and the glyph accrues its own collection across the cloth.
+ *
+ * `name` is the file name (`marks/<name>.md`) as well as the identity, so it is
+ * lower-case and filename-safe; `char` is the drawn form. Geometry only — the
+ * palette carries no color role of its own beyond ink.
+ */
+export interface Glyph {
+  name: string;
+  char: string;
+}
+
+/** exactly five (the brief's cap). Filled/open pairs, plus the asterisk. */
+export const GLYPH_PALETTE: readonly Glyph[] = [
+  { name: "dot", char: "●" },
+  { name: "ring", char: "○" },
+  { name: "lozenge", char: "◆" },
+  { name: "prism", char: "◇" },
+  { name: "star", char: "✳" },
+];
+
+export function isPaletteGlyph(name: string): boolean {
+  return GLYPH_PALETTE.some((g) => g.name === name);
+}
+
+/**
+ * The drawn form of a glyph name. A file may carry a glyph this build's palette
+ * does not offer (additive schema discipline — a later wave, a hand edit, an
+ * agent); it is NOT coerced into one of the five, it simply draws as its own
+ * initial. Losing it would be the one un-additive thing in the codec.
+ */
+export function glyphChar(name: string): string {
+  const found = GLYPH_PALETTE.find((g) => g.name === name);
+  if (found) return found.char;
+  return name.slice(0, 1).toUpperCase() || "?";
+}
+
+/**
+ * One stamp: this glyph, on this passage, on this card. Anchored by quoted text
+ * exactly as a fiber mark is (see `quotes.ts`) — a stamp is a location, not a
+ * highlight, and it carries no note of its own.
+ */
+export interface GlyphStamp {
+  id: string;
+  /** palette name, or a foreign one the file carried — never coerced */
+  glyph: string;
+  nodeId: string;
+  quote: string;
+  /** the brief's §0 substrate: a stamp is `how: "mark"` */
+  prov: Prov;
+  foreign?: Record<string, unknown>;
+}
+
+export interface GlyphSpec {
+  glyph: string;
+  nodeId: string;
+  quote: string;
+  prov?: ProvSeed;
+  foreign?: Record<string, unknown>;
+  /** only for load(): keep the id from the file */
+  id?: string;
+}
+
 export interface BoardSnapshot {
   nodes: LoomNode[];
   edges: LoomEdge[];
   threads: Thread[];
   marks: Mark[];
+  glyphs: GlyphStamp[];
   topologyMode: TopologyMode;
   contentMode: ContentMode;
   folderName?: string;
@@ -260,7 +336,7 @@ export interface BoardSnapshot {
  * What changed. `graph` = nodes/edges added or removed · `position` = a node
  * moved or resized · `content` = title/body/status · `meta` = modes ·
  * `threads` = the named-thread list · `marks` = the fibers on a card ·
- * `reset` = the whole board was replaced.
+ * `glyphs` = the meaning-mark stamps · `reset` = the whole board was replaced.
  */
 export type ChangeKind =
   | "graph"
@@ -269,6 +345,7 @@ export type ChangeKind =
   | "meta"
   | "threads"
   | "marks"
+  | "glyphs"
   | "reset";
 
 export interface Change {
@@ -288,6 +365,8 @@ export interface NodeSpec {
   width?: number;
   height?: number;
   text?: string;
+  /** this card renders `marks/<glyphFile>.md` (wave-2 §2) */
+  glyphFile?: string;
   html?: string;
   status?: LoadStatus;
   /** who/how/why — anything unsaid defaults to human · wander · now */
@@ -312,11 +391,17 @@ export interface Board {
   edges(): LoomEdge[];
   threads(): Thread[];
   marks(): Mark[];
+  /** every meaning-mark stamp on the board, in stamp order */
+  glyphs(): GlyphStamp[];
   node(id: string): LoomNode | undefined;
   edge(id: string): LoomEdge | undefined;
   thread(id: string): Thread | undefined;
   /** the fibers seam: everything marked on one card, in creation order */
   marksOf(nodeId: string): Mark[];
+  /** every glyph stamped on one card, in stamp order */
+  glyphsOf(nodeId: string): GlyphStamp[];
+  /** one glyph's whole collection — the thing `marks/<glyph>.md` is written from */
+  stampsOf(glyph: string): GlyphStamp[];
   /** the placed card for a ref, if any — the topology toggle's "already here?" */
   findByRef(kind: NodeKind, ref: string): LoomNode | undefined;
   findEdge(from: string, to: string, kind: EdgeKind): LoomEdge | undefined;
@@ -338,6 +423,10 @@ export interface Board {
   /** keep a fiber: the quote stays with the card, and rides a thread handoff */
   addMark(spec: MarkSpec): Mark;
   removeMark(id: string): void;
+
+  /** stamp a glyph on a passage — at highlight speed, no dialog, no naming */
+  addGlyph(spec: GlyphSpec): GlyphStamp;
+  removeGlyph(id: string): void;
 
   /** name a run of nodes — the moment a trail becomes an object you can keep */
   addThread(name: string, nodeIds: string[], prov?: ProvSeed): Thread;
@@ -558,6 +647,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
   const edges = new Map<string, LoomEdge>();
   let threads: Thread[] = [];
   let marks: Mark[] = [];
+  let stamps: GlyphStamp[] = [];
   let topology: TopologyMode = "returnedge";
   let content: ContentMode = "wiki";
   let folder: string | undefined;
@@ -585,6 +675,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       width: spec.width ?? DEFAULT_CARD_W,
       height: spec.height ?? DEFAULT_CARD_H,
       ...(spec.text === undefined ? {} : { text: spec.text }),
+      ...(spec.glyphFile === undefined ? {} : { glyphFile: spec.glyphFile }),
       ...(spec.html === undefined ? {} : { html: spec.html }),
       status: spec.status ?? "idle",
       prov: makeProv(seed),
@@ -622,6 +713,15 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     return out;
   }
 
+  /** a stamp arriving bare (a hand edit, an older file) takes the §0 backfill */
+  function adoptGlyph(g: GlyphStamp): GlyphStamp {
+    const out: GlyphStamp = { ...g };
+    out.prov = g.prov ? cloneProv(g.prov) : backfillProv({ by: "human", how: "mark", from: g.nodeId });
+    if (g.foreign) out.foreign = { ...g.foreign };
+    else delete out.foreign;
+    return out;
+  }
+
   function adoptThread(t: Thread): Thread {
     const out: Thread = { ...t, nodeIds: t.nodeIds.slice() };
     // the brief's backfill shape is uniform: human · wander · at-unknown, even
@@ -643,10 +743,13 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     edges: () => Array.from(edges.values()),
     threads: () => threads.slice(),
     marks: () => marks.slice(),
+    glyphs: () => stamps.slice(),
     node: (id) => nodes.get(id),
     edge: (id) => edges.get(id),
     thread: (id) => threads.find((t) => t.id === id),
     marksOf: (nodeId) => marks.filter((m) => m.nodeId === nodeId),
+    glyphsOf: (nodeId) => stamps.filter((g) => g.nodeId === nodeId),
+    stampsOf: (glyph) => stamps.filter((g) => g.glyph === glyph),
 
     findByRef(kind, ref) {
       if (!ref) return undefined;
@@ -693,6 +796,12 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       // A note card is half of a mark, so unpinning it takes the mark with it —
       // otherwise the source card keeps drawing an underline that leads nowhere.
       marks = marks.filter((m) => m.nodeId !== id && m.noteNodeId !== id);
+      // A glyph stamp is a LOCATION, and the location has gone. Unlike a thread
+      // (an ordered line whose name must survive a hole — see below), a glyph is
+      // an unordered set: losing one of its places leaves the rest of the
+      // collection meaning exactly what it meant, so the stamp just goes and the
+      // glyph file regenerates one entry shorter. No break record to keep.
+      stamps = stamps.filter((g) => g.nodeId !== id);
       // A thread, though, does NOT quietly shrink. Wave-2 §1's hard constraint
       // is that a name never detaches silently, and wave 1 broke it twice over:
       // the membership shrank (so the name stopped matching the run) and a
@@ -790,6 +899,28 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       emit({ kind: "marks", nodeIds: [gone.nodeId] });
     },
 
+    addGlyph(spec) {
+      const stamp: GlyphStamp = {
+        id: spec.id ?? freshId("g"),
+        glyph: spec.glyph,
+        nodeId: spec.nodeId,
+        quote: spec.quote,
+        // a stamp is the brief's `mark` verb, and it came from the card it is on
+        prov: makeProv({ how: "mark", from: spec.nodeId, src: null, ...(spec.prov ?? {}) }),
+        ...(spec.foreign === undefined ? {} : { foreign: { ...spec.foreign } }),
+      };
+      stamps = [...stamps, stamp];
+      emit({ kind: "glyphs", nodeIds: [stamp.nodeId] });
+      return stamp;
+    },
+
+    removeGlyph(id) {
+      const gone = stamps.find((g) => g.id === id);
+      if (!gone) return;
+      stamps = stamps.filter((g) => g.id !== id);
+      emit({ kind: "glyphs", nodeIds: [gone.nodeId] });
+    },
+
     addThread(name, nodeIds, prov) {
       const kept = nodeIds.filter((id) => nodes.has(id));
       const thread: Thread = {
@@ -884,6 +1015,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
         edges: Array.from(edges.values()).map(adoptEdge),
         threads: threads.map(adoptThread),
         marks: marks.map((m) => ({ ...m, ...(m.foreign ? { foreign: { ...m.foreign } } : {}) })),
+        glyphs: stamps.map(adoptGlyph),
         topologyMode: topology,
         contentMode: content,
         ...(folder === undefined ? {} : { folderName: folder }),
@@ -903,6 +1035,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
         ...m,
         ...(m.foreign ? { foreign: { ...m.foreign } } : {}),
       }));
+      stamps = (snapshot.glyphs ?? []).map(adoptGlyph);
       topology = snapshot.topologyMode ?? topology;
       content = snapshot.contentMode ?? content;
       folder = snapshot.folderName;
@@ -915,6 +1048,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       edges.clear();
       threads = [];
       marks = [];
+      stamps = [];
       // a cleared board is a new board — it inherits nobody's foreign fields
       boardForeign = undefined;
       emit({ kind: "reset" });

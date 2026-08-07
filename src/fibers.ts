@@ -18,6 +18,15 @@
 //                 so the note rides along in a thread handoff.
 //     → COMPOSER  the quote and its source ref, typed into the strip as a
 //                 blockquote line. No mark: this one is a send, not a keep.
+//     MARK ▸      (wave-2 §2) opens the five-glyph palette in the pill itself.
+//                 One more click stamps the passage into that glyph's
+//                 collection — no dialog, no naming step, no edge to draw. The
+//                 expander is STICKY for the session, so the second stamp
+//                 onward is a SINGLE click: the brief's bar is highlight speed,
+//                 and a two-click gesture would not clear it. Clicking a glyph
+//                 the passage already carries takes the stamp back off.
+//                 (This module only calls board.addGlyph/removeGlyph; glyphs.ts
+//                 draws the result, holds the selection, and writes the file.)
 //
 // Three rules the feel depends on:
 //   · The pill NEVER fights the browser's own selection. It does not appear
@@ -33,9 +42,11 @@
 //     silently underlining the wrong words.
 
 import type { Camera, Insets } from "./camera";
-import type { Board, Change, LoomNode, Mark } from "./model";
+import type { Board, Change, GlyphStamp, LoomNode, Mark } from "./model";
+import { GLYPH_PALETTE, glyphChar } from "./model";
 import type { Host } from "./host";
 import { refOf } from "./codec";
+import { collapse, unwrapAll, wrapQuote } from "./quotes";
 
 /** world px: a note is a small thing beside a big one */
 const NOTE_W = 200;
@@ -72,6 +83,8 @@ interface Grab {
   quote: string;
   /** the mark this selection is already inside, if any → the verb is "unmark" */
   existing: Mark | null;
+  /** the glyph stamps this selection is already inside — those verbs un-stamp */
+  stamps: GlyphStamp[];
   rect: DOMRect;
 }
 
@@ -82,6 +95,10 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     options.onStatus?.(text);
   }
 
+  /** what the pill is currently about; declared here because the palette's
+   *  first paint (below) re-positions the pill and must be able to read it */
+  let grab: Grab | null = null;
+
   // ---- the pill -----------------------------------------------------------
 
   const pill = document.createElement("div");
@@ -91,7 +108,32 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
   const markButton = verb("highlight", () => onHighlight());
   const noteButton = verb("note", () => onNote());
   const sendButton = verb("→ composer", () => onSend());
-  pill.append(markButton, noteButton, sendButton);
+
+  // the fourth action: the meaning-mark palette (wave-2 §2). The expander stays
+  // open once opened — a palette you have to re-open is a dialog by another name
+  const openButton = verb("mark ▸", () => setPalette(!paletteOpen));
+  openButton.classList.add("fiber-open");
+  const palette = document.createElement("span");
+  palette.className = "fiber-palette";
+  const glyphButtons = new Map<string, HTMLButtonElement>();
+  for (const glyph of GLYPH_PALETTE) {
+    const b = verb(glyphChar(glyph.name), () => onStamp(glyph.name));
+    b.classList.add("fiber-glyph");
+    b.title = `stamp ${glyph.name} — every passage stamped with it becomes one collection`;
+    glyphButtons.set(glyph.name, b);
+    palette.appendChild(b);
+  }
+  let paletteOpen = false;
+
+  function setPalette(open: boolean): void {
+    paletteOpen = open;
+    palette.hidden = !open;
+    openButton.textContent = open ? "mark ▾" : "mark ▸";
+    if (grab) position(grab.rect); // the pill just changed width
+  }
+
+  pill.append(markButton, noteButton, sendButton, openButton, palette);
+  setPalette(false);
   viewport.appendChild(pill);
 
   function verb(label: string, run: () => void): HTMLButtonElement {
@@ -118,8 +160,6 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     e.stopPropagation();
   });
 
-  let grab: Grab | null = null;
-
   // ---- reading the selection ----------------------------------------------
 
   function bodyOf(node: Node | null): HTMLElement | null {
@@ -144,11 +184,21 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     const nodeId = card?.dataset["nodeId"];
     if (!card || !nodeId) return null;
     if (!card.classList.contains("tier-full")) return null;
+    // a glyph file card is a RENDERING of the board; marking it would mark a
+    // quote that the next regeneration rewrites out from under the mark
+    if (board.node(nodeId)?.glyphFile !== undefined) return null;
     const quote = collapse(range.toString());
     if (quote.length < MIN_QUOTE) return null;
     const rect = range.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return null;
-    return { nodeId, body, quote, existing: markAround(range, nodeId), rect };
+    return {
+      nodeId,
+      body,
+      quote,
+      existing: markAround(range, nodeId),
+      stamps: stampsAround(range, nodeId),
+      rect,
+    };
   }
 
   /** a selection wholly inside an existing mark offers to take it back off */
@@ -163,6 +213,28 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     return board.marksOf(nodeId).find((m) => m.id === id) ?? null;
   }
 
+  /**
+   * Every glyph stamp this selection sits inside. Plural on purpose: one passage
+   * can carry two glyphs (the spans nest), and each of them must be able to come
+   * back off through its own button in the palette.
+   */
+  function stampsAround(range: Range, nodeId: string): GlyphStamp[] {
+    let el: Element | null =
+      range.commonAncestorContainer instanceof Element
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
+    const ids = new Set<string>();
+    while (el) {
+      const span = el.closest<HTMLElement>(".glyph-mark");
+      if (!span) break;
+      const id = span.dataset["stampId"];
+      if (id) ids.add(id);
+      el = span.parentElement;
+    }
+    if (ids.size === 0) return [];
+    return board.glyphsOf(nodeId).filter((s) => ids.has(s.id));
+  }
+
   // ---- show / dismiss ------------------------------------------------------
 
   function show(next: Grab): void {
@@ -173,6 +245,12 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
         : "unmark"
       : "highlight";
     noteButton.hidden = next.existing?.kind === "note";
+    // a glyph this passage already carries inverts: pressing it takes it off
+    for (const [name, b] of glyphButtons) {
+      const on = next.stamps.some((s) => s.glyph === name);
+      if (on) b.setAttribute("data-active", "");
+      else b.removeAttribute("data-active");
+    }
     pill.hidden = false;
     position(next.rect);
   }
@@ -324,6 +402,32 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     status(`note on "${echo(g.quote)}" — type it`);
   }
 
+  /**
+   * The stamp. One click, no dialog, no naming step — the passage joins that
+   * glyph's collection and the glyph's file rewrites itself. Pressing a glyph
+   * the passage already carries takes it back off, so the gesture is its own
+   * undo and nothing needs a second control.
+   *
+   * The selection is dropped afterwards for the same reason `highlight` drops
+   * it: the body is about to be re-wrapped with the new mark, which would
+   * invalidate the Range anyway. The margin atom appearing IS the receipt.
+   */
+  function onStamp(glyph: string): void {
+    const g = grab;
+    if (!g) return;
+    const already = g.stamps.find((s) => s.glyph === glyph);
+    if (already) {
+      board.removeGlyph(already.id);
+      dismiss(true);
+      status(`${glyphChar(glyph)} ${glyph} un-stamped`);
+      return;
+    }
+    board.addGlyph({ glyph, nodeId: g.nodeId, quote: g.quote });
+    dismiss(true);
+    const n = board.stampsOf(glyph).length;
+    status(`${glyphChar(glyph)} ${glyph} — ${n} passage${n === 1 ? "" : "s"} · marks/${glyph}.md`);
+  }
+
   function onSend(): void {
     const g = grab;
     if (!g) return;
@@ -409,86 +513,25 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     const el = options.getCardEl(nodeId);
     const body = el?.querySelector<HTMLElement>(".card-body");
     if (!body || body.isContentEditable) return;
-    unwrap(body);
+    unwrapAll(body, ".fiber-mark");
     const marks = board.marksOf(nodeId);
     if (marks.length === 0) return;
     for (const mark of marks) draw(body, mark);
   }
 
-  function unwrap(body: HTMLElement): void {
-    const spans = Array.from(body.querySelectorAll<HTMLElement>(".fiber-mark"));
-    if (spans.length === 0) return;
-    for (const span of spans) {
-      const parent = span.parentNode;
-      if (!parent) continue;
-      while (span.firstChild) parent.insertBefore(span.firstChild, span);
-      parent.removeChild(span);
-    }
-    body.normalize();
-  }
-
-  interface Slot {
-    node: Text;
-    offset: number;
-  }
-
-  /** the body's text with runs of whitespace collapsed, plus a char→node map */
-  function index(body: HTMLElement): { text: string; slots: Slot[] } {
-    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
-    const slots: Slot[] = [];
-    let text = "";
-    for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
-      const t = n as Text;
-      const data = t.data;
-      for (let i = 0; i < data.length; i += 1) {
-        const ch = data[i] ?? "";
-        if (/\s/.test(ch)) {
-          if (text.length === 0 || text.endsWith(" ")) continue;
-          text += " ";
-        } else {
-          text += ch;
-        }
-        slots.push({ node: t, offset: i });
-      }
-    }
-    return { text, slots };
-  }
-
+  /**
+   * The wrapping itself lives in quotes.ts now — wave-2 §2 added a second
+   * species of mark that anchors exactly the same way, and two copies of a
+   * quote-matcher would have drifted the first time one was fixed.
+   */
   function draw(body: HTMLElement, mark: Mark): void {
-    const quote = collapse(mark.quote);
-    if (quote.length < MIN_QUOTE) return;
-    const { text, slots } = index(body);
-    const at = text.indexOf(quote);
-    if (at < 0) return; // the quote is gone from this body — draw nothing, lie about nothing
-
-    // one wrap per text node the quote crosses; a quote that spans an <a> or an
-    // <i> gets several spans and still reads as one continuous hairline
-    type Span = { node: Text; start: number; end: number };
-    const runs: Span[] = [];
-    for (let i = at; i < at + quote.length; i += 1) {
-      const slot = slots[i];
-      if (!slot) break;
-      const last = runs[runs.length - 1];
-      if (last && last.node === slot.node && last.end === slot.offset) {
-        last.end = slot.offset + 1;
-        continue;
-      }
-      runs.push({ node: slot.node, start: slot.offset, end: slot.offset + 1 });
-    }
-
-    for (const run of runs) {
-      let target = run.node;
-      if (run.start > 0) target = target.splitText(run.start);
-      if (run.end - run.start < target.data.length) target.splitText(run.end - run.start);
-      const parent = target.parentNode;
-      if (!parent) continue;
+    wrapQuote(body, mark.quote, () => {
       const span = document.createElement("span");
       span.className = "fiber-mark";
       span.dataset["markId"] = mark.id;
       span.dataset["kind"] = mark.kind;
-      parent.insertBefore(span, target);
-      span.appendChild(target);
-    }
+      return span;
+    });
   }
 
   // ---- wiring --------------------------------------------------------------
@@ -506,7 +549,14 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
   });
 
   const unsubscribe = board.onChange((change: Change) => {
-    if (change.kind === "position" || change.kind === "meta" || change.kind === "threads") {
+    if (
+      change.kind === "position" ||
+      change.kind === "meta" ||
+      change.kind === "threads" ||
+      // a glyph stamp never removes a fiber span (glyphs.ts unwraps only its
+      // own class), so re-wrapping every body on a stamp would be pure churn
+      change.kind === "glyphs"
+    ) {
       return;
     }
     // the card layer subscribed first, so its DOM for this change already exists
@@ -538,16 +588,11 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
       unsubscribe();
       for (const n of board.nodes()) {
         const body = options.getCardEl(n.id)?.querySelector<HTMLElement>(".card-body");
-        if (body) unwrap(body);
+        if (body) unwrapAll(body, ".fiber-mark");
       }
       pill.remove();
     },
   };
-}
-
-/** one line, one space between words — what gets stored, matched and typed */
-export function collapse(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
 }
 
 function echo(quote: string): string {
