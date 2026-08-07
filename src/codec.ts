@@ -12,19 +12,93 @@ import type {
   BoardSnapshot,
   ContentMode,
   EdgeKind,
+  Foreign,
   LoomEdge,
   LoomNode,
   Mark,
   NodeKind,
+  Prov,
+  ProvBy,
+  ProvHow,
   Thread,
   TopologyMode,
 } from "./model";
-import { DEFAULT_CARD_H, DEFAULT_CARD_W, TOPOLOGY_MODES, freshId } from "./model";
+import {
+  DEFAULT_CARD_H,
+  DEFAULT_CARD_W,
+  PROV_BY,
+  PROV_HOW,
+  TOPOLOGY_MODES,
+  backfillProv,
+  freshId,
+} from "./model";
 import type { Host } from "./host";
 
 export const BOARD_PATH = "board.canvas";
 
 type Json = Record<string, unknown>;
+
+// ------------------------------------------------------------- foreign ----
+// Which keys this build OWNS. Everything else in a node/edge/thread/mark object
+// is somebody else's — a hand-edit, an agent extension, a later wave — and is
+// carried through untouched (brief §0: additive schema discipline).
+//
+// `fromSide`/`toSide` are deliberately NOT owned: the renderer picks sides from
+// live geometry and only synthesizes advisory ones for foreign readers, so a
+// file that states them keeps its own.
+
+const NODE_BASE_KEYS = ["id", "type", "x", "y", "width", "height", "x-powerset"];
+const NODE_EXT_KEYS = new Set(["kind", "title", "ref", "prov"]);
+const EDGE_BASE_KEYS = new Set(["id", "fromNode", "toNode", "label", "x-powerset"]);
+const EDGE_EXT_KEYS = new Set(["kind", "prov"]);
+const THREAD_KEYS = new Set(["id", "name", "nodeIds", "prov"]);
+const MARK_KEYS = new Set(["id", "nodeId", "quote", "kind", "noteNodeId"]);
+const BOARD_BASE_KEYS = new Set(["nodes", "edges", "x-powerset"]);
+const BOARD_EXT_KEYS = new Set([
+  "version",
+  "topologyMode",
+  "contentMode",
+  "folderName",
+  "threads",
+  "marks",
+]);
+
+/** the payload key a node of this kind carries is ours; on any other kind it is not */
+function nodeOwnedKeys(kind: NodeKind): Set<string> {
+  const own = new Set(NODE_BASE_KEYS);
+  own.add(kind === "wiki" ? "url" : kind === "doc" ? "file" : "text");
+  return own;
+}
+
+function pickForeign(raw: Json, owned: Set<string>): Record<string, unknown> | undefined {
+  let out: Record<string, unknown> | undefined;
+  for (const key of Object.keys(raw)) {
+    if (owned.has(key)) continue;
+    (out ??= {})[key] = raw[key];
+  }
+  return out;
+}
+
+function foreignOf(
+  raw: Json,
+  owned: Set<string>,
+  ext: Json,
+  ownedExt: Set<string>,
+): Foreign | undefined {
+  const top = pickForeign(raw, owned);
+  const inner = pickForeign(ext, ownedExt);
+  if (!top && !inner) return undefined;
+  return { ...(top ? { top } : {}), ...(inner ? { ext: inner } : {}) };
+}
+
+/** replay foreign keys, never letting one clobber a field this build owns */
+function replay(target: Json, extras: Record<string, unknown> | undefined): void {
+  if (!extras) return;
+  for (const key of Object.keys(extras)) {
+    if (key in target) continue;
+    target[key] = extras[key];
+  }
+}
 
 interface CanvasNodeOut extends Json {
   id: string;
@@ -50,34 +124,69 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
     if (n.kind === "wiki") base["url"] = wikiUrl(n.ref);
     if (n.kind === "doc") base["file"] = n.ref;
     if (n.kind === "note") base["text"] = n.text ?? "";
-    base["x-powerset"] = { kind: n.kind, title: n.title, ref: n.ref };
+    replay(base, n.foreign?.top);
+    const ext: Json = { kind: n.kind, title: n.title, ref: n.ref, prov: provOut(n.prov) };
+    replay(ext, n.foreign?.ext);
+    base["x-powerset"] = ext;
     return base;
   });
 
   const edges: Json[] = snapshot.edges.map((e) => {
-    const out: Json = {
-      id: e.id,
-      fromNode: e.from,
-      toNode: e.to,
-      ...sidesFor(e.kind),
-    };
+    const out: Json = { id: e.id, fromNode: e.from, toNode: e.to };
     if (e.label !== undefined) out["label"] = e.label;
-    out["x-powerset"] = { kind: e.kind };
+    // a file that stated its own sides keeps them; ours are only advisory
+    replay(out, e.foreign?.top);
+    replay(out, sidesFor(e.kind));
+    const ext: Json = { kind: e.kind, prov: provOut(e.prov) };
+    replay(ext, e.foreign?.ext);
+    out["x-powerset"] = ext;
     return out;
   });
 
-  return {
-    nodes,
-    edges,
-    "x-powerset": {
-      version: 1,
-      topologyMode: snapshot.topologyMode,
-      contentMode: snapshot.contentMode,
-      ...(snapshot.folderName === undefined ? {} : { folderName: snapshot.folderName }),
-      threads: snapshot.threads,
-      marks: snapshot.marks,
-    },
+  const threads: Json[] = snapshot.threads.map((t) => {
+    // `prov` sits at the TOP LEVEL of a thread entry: a thread has no
+    // `x-powerset` block of its own to nest it inside (P0 gap #1)
+    const out: Json = { id: t.id, name: t.name, nodeIds: t.nodeIds.slice(), prov: provOut(t.prov) };
+    replay(out, t.foreign?.top);
+    if (t.foreign?.ext) out["x-powerset"] = { ...t.foreign.ext };
+    return out;
+  });
+
+  const marks: Json[] = snapshot.marks.map((m) => {
+    const out: Json = { id: m.id, nodeId: m.nodeId, quote: m.quote, kind: m.kind };
+    if (m.noteNodeId !== undefined) out["noteNodeId"] = m.noteNodeId;
+    replay(out, m.foreign);
+    return out;
+  });
+
+  const ext: Json = {
+    version: 1,
+    topologyMode: snapshot.topologyMode,
+    contentMode: snapshot.contentMode,
+    ...(snapshot.folderName === undefined ? {} : { folderName: snapshot.folderName }),
+    threads,
+    marks,
   };
+  replay(ext, snapshot.foreign?.ext);
+
+  const out: Json = { nodes, edges, "x-powerset": ext };
+  replay(out, snapshot.foreign?.top);
+  return out;
+}
+
+/** the wire shape, in the brief's field order; unknown prov keys ride along */
+function provOut(prov: Prov): Json {
+  const out: Json = {
+    at: prov.at,
+    by: prov.by,
+    how: prov.how,
+    from: prov.from,
+    src: prov.src,
+  };
+  if (prov.x0 !== undefined) out["x0"] = prov.x0;
+  if (prov.y0 !== undefined) out["y0"] = prov.y0;
+  replay(out, prov as Record<string, unknown>);
+  return out;
 }
 
 function sidesFor(kind: EdgeKind): Json {
@@ -135,6 +244,8 @@ export function fromCanvas(raw: unknown): Partial<BoardSnapshot> | null {
   };
   const folder = ext["folderName"];
   if (typeof folder === "string") out.folderName = folder;
+  const foreign = foreignOf(raw, BOARD_BASE_KEYS, ext, BOARD_EXT_KEYS);
+  if (foreign) out.foreign = foreign;
   return out;
 }
 
@@ -158,19 +269,26 @@ function readNode(raw: unknown): LoomNode | null {
   const ref = str(ext["ref"]) ?? (kind === "doc" ? (file ?? "") : titleFromUrl(url));
   const title = str(ext["title"]) ?? fallbackTitle(kind, ref, str(raw["text"]));
 
+  const x = num(raw["x"]) ?? 0;
+  const y = num(raw["y"]) ?? 0;
   const node: LoomNode = {
     id: str(raw["id"]) ?? freshId("n"),
     kind,
     ref,
     title,
-    x: num(raw["x"]) ?? 0,
-    y: num(raw["y"]) ?? 0,
+    x,
+    y,
     width: num(raw["width"]) ?? DEFAULT_CARD_W,
     height: num(raw["height"]) ?? DEFAULT_CARD_H,
     status: "idle",
+    // a card with no recorded birthplace was born where it stands — the only
+    // honest guess, and the one relax needs to have something to restore to
+    prov: readProv(ext["prov"], { x0: x, y0: y }),
   };
   const text = str(raw["text"]);
   if (kind === "note" && text !== undefined) node.text = text;
+  const foreign = foreignOf(raw, nodeOwnedKeys(kind), ext, NODE_EXT_KEYS);
+  if (foreign) node.foreign = foreign;
   return node;
 }
 
@@ -181,9 +299,17 @@ function readEdge(raw: unknown): LoomEdge | null {
   if (!from || !to) return null;
   const ext = isObject(raw["x-powerset"]) ? raw["x-powerset"] : {};
   const kind = readEdgeKind(ext["kind"]);
-  const edge: LoomEdge = { id: str(raw["id"]) ?? freshId("e"), from, to, kind };
+  const edge: LoomEdge = {
+    id: str(raw["id"]) ?? freshId("e"),
+    from,
+    to,
+    kind,
+    prov: readProv(ext["prov"], { from }),
+  };
   const label = str(raw["label"]);
   if (label !== undefined) edge.label = label;
+  const foreign = foreignOf(raw, EDGE_BASE_KEYS, ext, EDGE_EXT_KEYS);
+  if (foreign) edge.foreign = foreign;
   return edge;
 }
 
@@ -194,7 +320,27 @@ function readThreads(raw: unknown): Thread[] {
     const id = str(item["id"]);
     if (!id) continue;
     const nodeIds = asArray(item["nodeIds"]).filter((v): v is string => typeof v === "string");
-    out.push({ id, name: str(item["name"]) ?? "thread", nodeIds });
+
+    // Migration: the P0 agent, told "prov goes inside every x-powerset block",
+    // reasonably invented one inside the thread entry. Read it, then rewrite it
+    // to the top level — and drop it from the preserved leftovers so the board
+    // does not end up carrying two copies that can drift apart.
+    const nested = isObject(item["x-powerset"]) ? { ...item["x-powerset"] } : null;
+    const nestedProv = nested?.["prov"];
+    if (nested) delete nested["prov"];
+
+    const thread: Thread = {
+      id,
+      name: str(item["name"]) ?? "thread",
+      nodeIds,
+      prov: readProv(item["prov"] ?? nestedProv, { from: nodeIds[0] ?? null }),
+    };
+    const top = pickForeign(item, new Set([...THREAD_KEYS, "x-powerset"]));
+    const leftover = nested && Object.keys(nested).length > 0 ? nested : undefined;
+    if (top || leftover) {
+      thread.foreign = { ...(top ? { top } : {}), ...(leftover ? { ext: leftover } : {}) };
+    }
+    out.push(thread);
   }
   return out;
 }
@@ -214,9 +360,49 @@ function readMarks(raw: unknown): Mark[] {
     };
     const noteNodeId = str(item["noteNodeId"]);
     if (noteNodeId !== undefined) mark.noteNodeId = noteNodeId;
+    const foreign = pickForeign(item, MARK_KEYS);
+    if (foreign) mark.foreign = foreign;
     out.push(mark);
   }
   return out;
+}
+
+/**
+ * Provenance, liberal on read. Absent → the brief's backfill shape
+ * (`human · wander · at: null`) with the caller's positional fallback standing
+ * in for the birthplace. Present → taken as written, including keys this build
+ * does not know; only `by` and `how` are narrowed to their unions, since a
+ * value outside them would be a schema violation the renderer cannot act on.
+ */
+function readProv(
+  raw: unknown,
+  fallback?: { x0?: number; y0?: number; from?: string | null },
+): Prov {
+  if (!isObject(raw)) {
+    return backfillProv({
+      by: "human",
+      how: "wander",
+      ...(fallback?.x0 === undefined ? {} : { x0: fallback.x0 }),
+      ...(fallback?.y0 === undefined ? {} : { y0: fallback.y0 }),
+    });
+  }
+  const seed: Record<string, unknown> = { ...raw };
+  seed["at"] = typeof raw["at"] === "string" ? raw["at"] : null;
+  const by: ProvBy = PROV_BY.find((v) => v === raw["by"]) ?? "human";
+  const how: ProvHow = PROV_HOW.find((v) => v === raw["how"]) ?? "wander";
+  seed["by"] = by;
+  seed["how"] = how;
+  // an explicit `from: null` MEANS null; only a missing key takes the fallback,
+  // or the codec would not be idempotent (write null → read back the fallback)
+  seed["from"] = "from" in raw ? (str(raw["from"]) ?? null) : (fallback?.from ?? null);
+  seed["src"] = str(raw["src"]) ?? null;
+  const x0 = num(raw["x0"]) ?? fallback?.x0;
+  const y0 = num(raw["y0"]) ?? fallback?.y0;
+  if (x0 === undefined) delete seed["x0"];
+  else seed["x0"] = x0;
+  if (y0 === undefined) delete seed["y0"];
+  else seed["y0"] = y0;
+  return backfillProv(seed as Prov);
 }
 
 function readKind(raw: unknown, type: string): NodeKind {

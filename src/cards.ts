@@ -283,7 +283,10 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     if (!current.moved) return;
     const dropped = dropTarget(e, current.id);
     if (dropped) {
-      board.addEdge(current.id, dropped, "manual");
+      // an alt-drag edge is an assertion, not a walk: nothing was followed
+      board.addEdge(current.id, dropped, "manual", {
+        prov: { by: "human", how: "place", from: current.id, src: null },
+      });
       ping(dropped);
     }
   }

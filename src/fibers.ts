@@ -293,6 +293,9 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
     const spot = noteSpot(source, g.rect);
     dismiss(true);
 
+    // a note is born of a MARK on its source — provenance says so on both the
+    // card and the hairline that holds it there
+    const prov = { by: "human", how: "mark", from: source.id, src: null } as const;
     const note = board.addNode({
       kind: "note",
       ref: "",
@@ -303,8 +306,9 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
       height: NOTE_H,
       text: "",
       status: "ready",
+      prov,
     });
-    board.addEdge(source.id, note.id, "tether");
+    board.addEdge(source.id, note.id, "tether", { prov });
     board.addMark({
       nodeId: source.id,
       quote: g.quote,

@@ -329,7 +329,13 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
       board.setThreadNodes(existing.id, selection.nodeIds);
       status(`thread renamed "${name}"`);
     } else {
-      const thread = board.addThread(name, selection.nodeIds);
+      // naming is the moment a run is CAPTURED as an object; its root is its parent
+      const thread = board.addThread(name, selection.nodeIds, {
+        by: "human",
+        how: "capture",
+        from: selection.nodeIds[0] ?? null,
+        src: null,
+      });
       setSelection({ ...selection, threadId: thread.id });
       status(`thread "${name}" kept — ${selection.nodeIds.length} cards`);
     }

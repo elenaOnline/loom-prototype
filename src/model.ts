@@ -21,6 +21,109 @@ export const TOPOLOGY_MODES: readonly TopologyMode[] = [
   "returnedge",
 ];
 
+export type ProvBy = "human" | "agent";
+export type ProvHow = "wander" | "place" | "capture" | "mark" | "reply";
+
+export const PROV_BY: readonly ProvBy[] = ["human", "agent"];
+export const PROV_HOW: readonly ProvHow[] = ["wander", "place", "capture", "mark", "reply"];
+
+/**
+ * The provenance substrate (wave-2 brief §0). Every node, every edge and every
+ * thread carries one; it is written at creation and preserved verbatim through
+ * load/save. It cannot be retrofitted — a board that did not record how a card
+ * arrived can never be asked later — so it is spec'd before any lens reads it.
+ *
+ * `x0/y0` are the world coordinates the object was BORN at (nodes only). They
+ * are what makes the "relax" verb possible: pull-taut and hand-drags move a
+ * card away from where the wander put it, and relax puts it back. Recording
+ * them costs two numbers; reconstructing them later costs the whole history.
+ *
+ * The index signature is deliberate: an agent (or a later wave) may write keys
+ * this build does not know, and losing them on the next autosave would break
+ * the additive-schema promise.
+ */
+export interface Prov {
+  /** ISO-8601 UTC, second precision. `null` = backfilled: creation time unknown */
+  at: string | null;
+  by: ProvBy;
+  how: ProvHow;
+  /** spawned-from: trail parent, marked card, anchor of a reply — else null */
+  from: string | null;
+  /** external origin: the href actually followed, a file path — else null */
+  src: string | null;
+  /** world x at creation (nodes only) */
+  x0?: number;
+  /** world y at creation (nodes only) */
+  y0?: number;
+  [key: string]: unknown;
+}
+
+/** what a creation site supplies; everything unsaid takes a default */
+export type ProvSeed = Partial<Prov>;
+
+const PROV_KNOWN_KEYS = new Set(["at", "by", "how", "from", "src", "x0", "y0"]);
+
+/** ISO-8601 UTC at second precision — the brief's stamp, not JS's millisecond one */
+export function nowStamp(): string {
+  return new Date().toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+function buildProv(at: string | null, seed: ProvSeed | undefined): Prov {
+  const out: Prov = {
+    at: seed && seed.at !== undefined ? seed.at : at,
+    by: seed?.by ?? "human",
+    how: seed?.how ?? "wander",
+    from: seed?.from ?? null,
+    src: seed?.src ?? null,
+  };
+  if (seed?.x0 !== undefined) out.x0 = seed.x0;
+  if (seed?.y0 !== undefined) out.y0 = seed.y0;
+  if (seed) {
+    for (const key of Object.keys(seed)) {
+      if (!PROV_KNOWN_KEYS.has(key)) out[key] = seed[key];
+    }
+  }
+  return out;
+}
+
+/** provenance for something being created RIGHT NOW */
+export function makeProv(seed?: ProvSeed): Prov {
+  return buildProv(nowStamp(), seed);
+}
+
+/**
+ * Provenance for something that predates the substrate. `at: null` is the
+ * honest answer — the file never said — and is deliberately distinguishable
+ * from a real stamp so a later lens can grey out what it does not know.
+ */
+export function backfillProv(seed?: ProvSeed): Prov {
+  return buildProv(null, seed);
+}
+
+export function cloneProv(p: Prov): Prov {
+  return { ...p };
+}
+
+/**
+ * Fields the file carried that this build does not model. Replayed verbatim on
+ * save so a hand-edit or an agent's extension survives a round trip through the
+ * prototype (additive schema discipline, brief §0).
+ */
+export interface Foreign {
+  /** unrecognized top-level keys of the object as it appeared in the file */
+  top?: Record<string, unknown>;
+  /** unrecognized keys inside the object's `x-powerset` block */
+  ext?: Record<string, unknown>;
+}
+
+export function cloneForeign(f: Foreign | undefined): Foreign | undefined {
+  if (!f) return undefined;
+  const out: Foreign = {};
+  if (f.top) out.top = { ...f.top };
+  if (f.ext) out.ext = { ...f.ext };
+  return out.top || out.ext ? out : undefined;
+}
+
 export interface LoomNode {
   id: string;
   kind: NodeKind;
@@ -37,6 +140,9 @@ export interface LoomNode {
   html?: string;
   status: LoadStatus;
   error?: string;
+  /** how this placement came to be — always present (brief §0) */
+  prov: Prov;
+  foreign?: Foreign;
 }
 
 export interface LoomEdge {
@@ -45,6 +151,9 @@ export interface LoomEdge {
   to: string;
   kind: EdgeKind;
   label?: string;
+  /** how this connection came to be — always present (brief §0) */
+  prov: Prov;
+  foreign?: Foreign;
 }
 
 /**
@@ -56,6 +165,14 @@ export interface Thread {
   id: string;
   name: string;
   nodeIds: string[];
+  /**
+   * A thread entry has no `x-powerset` block to nest provenance inside — the
+   * whole thread list already lives in one. So `prov` sits at the TOP LEVEL of
+   * the entry (P0 convention gap #1, closed here). Readers also accept the
+   * nested `x-powerset.prov` the P0 agent invented, and rewrite it to this spot.
+   */
+  prov: Prov;
+  foreign?: Foreign;
 }
 
 /**
@@ -69,6 +186,13 @@ export interface Mark {
   quote: string;
   kind: "highlight" | "note";
   noteNodeId?: string;
+  /**
+   * Marks are NOT given a `prov` field by this stage (the brief scopes §0 to
+   * nodes, edges and thread entries) — but any `prov` a file carries on a mark
+   * rides here verbatim and survives the round trip, so the glyph stage can
+   * start writing one without a format change.
+   */
+  foreign?: Record<string, unknown>;
 }
 
 export interface MarkSpec {
@@ -76,6 +200,7 @@ export interface MarkSpec {
   quote: string;
   kind: "highlight" | "note";
   noteNodeId?: string;
+  foreign?: Record<string, unknown>;
   /** only for load(): keep the id from the file */
   id?: string;
 }
@@ -88,6 +213,8 @@ export interface BoardSnapshot {
   topologyMode: TopologyMode;
   contentMode: ContentMode;
   folderName?: string;
+  /** unknown top-level / board-level `x-powerset` keys, carried verbatim */
+  foreign?: Foreign;
 }
 
 /**
@@ -124,8 +251,18 @@ export interface NodeSpec {
   text?: string;
   html?: string;
   status?: LoadStatus;
+  /** who/how/why — anything unsaid defaults to human · wander · now */
+  prov?: ProvSeed;
+  foreign?: Foreign;
   /** only for load(): keep the id from the file */
   id?: string;
+}
+
+/** everything an edge needs beyond its two ends and its kind */
+export interface EdgeSpec {
+  label?: string;
+  prov?: ProvSeed;
+  foreign?: Foreign;
 }
 
 export const DEFAULT_CARD_W = 380;
@@ -156,7 +293,7 @@ export interface Board {
     patch: { title?: string; html?: string; text?: string; status?: LoadStatus; error?: string },
   ): void;
 
-  addEdge(from: string, to: string, kind: EdgeKind, label?: string): LoomEdge | undefined;
+  addEdge(from: string, to: string, kind: EdgeKind, spec?: EdgeSpec): LoomEdge | undefined;
   removeEdge(id: string): void;
 
   /** keep a fiber: the quote stays with the card, and rides a thread handoff */
@@ -164,7 +301,7 @@ export interface Board {
   removeMark(id: string): void;
 
   /** name a run of nodes — the moment a trail becomes an object you can keep */
-  addThread(name: string, nodeIds: string[]): Thread;
+  addThread(name: string, nodeIds: string[], prov?: ProvSeed): Thread;
   renameThread(id: string, name: string): void;
   setThreadNodes(id: string, nodeIds: string[]): void;
   removeThread(id: string): void;
@@ -223,6 +360,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
   let topology: TopologyMode = "returnedge";
   let content: ContentMode = "wiki";
   let folder: string | undefined;
+  let boardForeign: Foreign | undefined;
 
   const listeners = new Set<ChangeListener>();
 
@@ -231,7 +369,12 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
   }
 
   function makeNode(spec: NodeSpec): LoomNode {
-    return {
+    // Every card records where it was BORN, whatever the creation site said —
+    // a spawn site that forgets x0/y0 would silently un-build the relax verb.
+    const seed: ProvSeed = { ...(spec.prov ?? {}) };
+    if (seed.x0 === undefined) seed.x0 = spec.x;
+    if (seed.y0 === undefined) seed.y0 = spec.y;
+    const node: LoomNode = {
       id: spec.id ?? freshId("n"),
       kind: spec.kind,
       ref: spec.ref ?? "",
@@ -243,7 +386,50 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       ...(spec.text === undefined ? {} : { text: spec.text }),
       ...(spec.html === undefined ? {} : { html: spec.html }),
       status: spec.status ?? "idle",
+      prov: makeProv(seed),
     };
+    const foreign = cloneForeign(spec.foreign);
+    if (foreign) node.foreign = foreign;
+    return node;
+  }
+
+  /**
+   * The load-path safety net. `load()` takes whatever a caller hands it, and a
+   * node without provenance would be a hole the rest of wave 2 reads through —
+   * so anything arriving bare is backfilled to human · wander · at-unknown,
+   * with its CURRENT position standing in for where it was born.
+   */
+  function adoptNode(n: LoomNode): LoomNode {
+    const out: LoomNode = { ...n };
+    out.prov = n.prov
+      ? cloneProv(n.prov)
+      : backfillProv({ by: "human", how: "wander", x0: n.x, y0: n.y });
+    if (out.prov.x0 === undefined) out.prov.x0 = n.x;
+    if (out.prov.y0 === undefined) out.prov.y0 = n.y;
+    const foreign = cloneForeign(n.foreign);
+    if (foreign) out.foreign = foreign;
+    else delete out.foreign;
+    return out;
+  }
+
+  function adoptEdge(e: LoomEdge): LoomEdge {
+    const out: LoomEdge = { ...e };
+    out.prov = e.prov ? cloneProv(e.prov) : backfillProv({ by: "human", how: "wander" });
+    const foreign = cloneForeign(e.foreign);
+    if (foreign) out.foreign = foreign;
+    else delete out.foreign;
+    return out;
+  }
+
+  function adoptThread(t: Thread): Thread {
+    const out: Thread = { ...t, nodeIds: t.nodeIds.slice() };
+    // the brief's backfill shape is uniform: human · wander · at-unknown, even
+    // for a thread, which is never literally wandered into being
+    out.prov = t.prov ? cloneProv(t.prov) : backfillProv({ by: "human", how: "wander" });
+    const foreign = cloneForeign(t.foreign);
+    if (foreign) out.foreign = foreign;
+    else delete out.foreign;
+    return out;
   }
 
   const board: Board = {
@@ -336,7 +522,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       emit({ kind: "content", nodeIds: [id] });
     },
 
-    addEdge(from, to, kind, label) {
+    addEdge(from, to, kind, spec) {
       if (from === to) return undefined;
       if (!nodes.has(from) || !nodes.has(to)) return undefined;
       const existing = board.findEdge(from, to, kind);
@@ -346,8 +532,12 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
         from,
         to,
         kind,
-        ...(label === undefined ? {} : { label }),
+        ...(spec?.label === undefined ? {} : { label: spec.label }),
+        // an edge with no stated parent came from its own source card
+        prov: makeProv({ from, ...(spec?.prov ?? {}) }),
       };
+      const foreign = cloneForeign(spec?.foreign);
+      if (foreign) edge.foreign = foreign;
       edges.set(edge.id, edge);
       emit({ kind: "graph", edgeIds: [edge.id] });
       return edge;
@@ -365,6 +555,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
         quote: spec.quote,
         kind: spec.kind,
         ...(spec.noteNodeId === undefined ? {} : { noteNodeId: spec.noteNodeId }),
+        ...(spec.foreign === undefined ? {} : { foreign: { ...spec.foreign } }),
       };
       marks = [...marks, mark];
       emit({ kind: "marks", nodeIds: [mark.nodeId] });
@@ -378,12 +569,15 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       emit({ kind: "marks", nodeIds: [gone.nodeId] });
     },
 
-    addThread(name, nodeIds) {
+    addThread(name, nodeIds, prov) {
+      const kept = nodeIds.filter((id) => nodes.has(id));
       const thread: Thread = {
         id: freshId("t"),
         name,
         // a thread only ever holds placements that exist, in the order given
-        nodeIds: nodeIds.filter((id) => nodes.has(id)),
+        nodeIds: kept,
+        // a named thread is a run CAPTURED — from = the run's root
+        prov: makeProv({ how: "capture", from: kept[0] ?? null, ...(prov ?? {}) }),
       };
       threads = [...threads, thread];
       emit({ kind: "threads" });
@@ -438,28 +632,33 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
 
     snapshot() {
       return {
-        nodes: Array.from(nodes.values()).map((n) => ({ ...n })),
-        edges: Array.from(edges.values()).map((e) => ({ ...e })),
-        threads: threads.map((t) => ({ ...t, nodeIds: t.nodeIds.slice() })),
-        marks: marks.map((m) => ({ ...m })),
+        nodes: Array.from(nodes.values()).map(adoptNode),
+        edges: Array.from(edges.values()).map(adoptEdge),
+        threads: threads.map(adoptThread),
+        marks: marks.map((m) => ({ ...m, ...(m.foreign ? { foreign: { ...m.foreign } } : {}) })),
         topologyMode: topology,
         contentMode: content,
         ...(folder === undefined ? {} : { folderName: folder }),
+        ...(boardForeign ? { foreign: cloneForeign(boardForeign) } : {}),
       };
     },
 
     load(snapshot) {
       nodes.clear();
       edges.clear();
-      for (const n of snapshot.nodes ?? []) nodes.set(n.id, { ...n });
+      for (const n of snapshot.nodes ?? []) nodes.set(n.id, adoptNode(n));
       for (const e of snapshot.edges ?? []) {
-        if (nodes.has(e.from) && nodes.has(e.to)) edges.set(e.id, { ...e });
+        if (nodes.has(e.from) && nodes.has(e.to)) edges.set(e.id, adoptEdge(e));
       }
-      threads = (snapshot.threads ?? []).map((t) => ({ ...t, nodeIds: t.nodeIds.slice() }));
-      marks = (snapshot.marks ?? []).map((m) => ({ ...m }));
+      threads = (snapshot.threads ?? []).map(adoptThread);
+      marks = (snapshot.marks ?? []).map((m) => ({
+        ...m,
+        ...(m.foreign ? { foreign: { ...m.foreign } } : {}),
+      }));
       topology = snapshot.topologyMode ?? topology;
       content = snapshot.contentMode ?? content;
       folder = snapshot.folderName;
+      boardForeign = cloneForeign(snapshot.foreign);
       emit({ kind: "reset" });
     },
 
@@ -468,6 +667,8 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       edges.clear();
       threads = [];
       marks = [];
+      // a cleared board is a new board — it inherits nobody's foreign fields
+      boardForeign = undefined;
       emit({ kind: "reset" });
     },
 

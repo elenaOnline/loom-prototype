@@ -17,7 +17,7 @@
 // A link click NEVER navigates: capture-phase, preventDefault always.
 
 import type { Camera, Insets } from "./camera";
-import type { Board, LoomNode, NodeKind } from "./model";
+import type { Board, LoomNode, NodeKind, ProvSeed } from "./model";
 import { DEFAULT_CARD_H, DEFAULT_CARD_W } from "./model";
 import { LINK_REF_ATTR, LINK_ROLE_ATTR } from "./providers/source";
 import type { ContentSource } from "./providers/source";
@@ -191,16 +191,32 @@ export function createTrail(options: TrailOptions): Trail {
     ref: string,
     title: string,
     from: LoomNode | null,
+    prov: ProvSeed,
   ): LoomNode {
     const w = DEFAULT_CARD_W;
     const h = DEFAULT_CARD_H;
     const at = from ? placeNear(from, w, h) : { x: 0, y: 0 };
-    const node = board.addNode({ kind, ref, title, x: at.x, y: at.y, width: w, height: h });
+    const node = board.addNode({
+      kind,
+      ref,
+      title,
+      x: at.x,
+      y: at.y,
+      width: w,
+      height: h,
+      prov,
+    });
     void hydrate(node.id);
     return node;
   }
 
-  function follow(sourceId: string, href: string, text: string): void {
+  /**
+   * `rawHref` is the href as the document wrote it, NOT the resolved ref — a
+   * Wikipedia redirect slug reaches a card whose ref is the canonical title,
+   * and provenance is the only place the difference can be kept (FINDINGS
+   * learning 3: record what was FOLLOWED, canonicalize what was REACHED).
+   */
+  function follow(sourceId: string, href: string, rawHref: string, text: string): void {
     const source = getSource();
     const from = board.node(sourceId);
     if (!source || !from) return;
@@ -210,6 +226,14 @@ export function createTrail(options: TrailOptions): Trail {
       return;
     }
 
+    // every object born of a link click is a WANDER, from this card, via this href
+    const prov: ProvSeed = {
+      by: "human",
+      how: "wander",
+      from: sourceId,
+      src: rawHref || href || null,
+    };
+
     const mode = board.topologyMode();
     const existing = board.findByRef(target.kind, target.ref);
     const revisit = existing !== undefined && existing.id !== sourceId;
@@ -218,14 +242,14 @@ export function createTrail(options: TrailOptions): Trail {
     // modes give nothing at all when the card you came back to is off-screen —
     // and the §7.1 comparison would be reading a rendering accident.
     if (revisit && existing && mode === "linkback") {
-      board.addEdge(sourceId, existing.id, "trail");
+      board.addEdge(sourceId, existing.id, "trail", { prov });
       options.onPing?.(existing.id);
       nudge(existing);
       status(`linked back → ${existing.title}`);
       return;
     }
     if (revisit && existing && mode === "returnedge") {
-      board.addEdge(sourceId, existing.id, "return");
+      board.addEdge(sourceId, existing.id, "return", { prov });
       options.onPing?.(existing.id);
       nudge(existing);
       status(`return edge → ${existing.title}`);
@@ -236,8 +260,8 @@ export function createTrail(options: TrailOptions): Trail {
       return;
     }
 
-    const node = spawn(target.kind, target.ref, target.title, from);
-    board.addEdge(sourceId, node.id, "trail");
+    const node = spawn(target.kind, target.ref, target.title, from, prov);
+    board.addEdge(sourceId, node.id, "trail", { prov });
     status(revisit ? `duplicate → ${target.title}` : `spawned → ${target.title}`);
     nudge(node);
   }
@@ -279,7 +303,8 @@ export function createTrail(options: TrailOptions): Trail {
       return;
     }
     const ref = a.getAttribute(LINK_REF_ATTR);
-    follow(sourceId, ref ?? a.getAttribute("href") ?? "", a.textContent ?? "");
+    const rawHref = a.getAttribute("href") ?? "";
+    follow(sourceId, ref ?? rawHref, rawHref, a.textContent ?? "");
   }
 
   function onAuxCapture(e: MouseEvent): void {
@@ -318,6 +343,8 @@ export function createTrail(options: TrailOptions): Trail {
         y: at?.y ?? 0,
         width: DEFAULT_CARD_W,
         height: DEFAULT_CARD_H,
+        // a root was PUT here (seed, or an explicit open) — nothing was followed
+        prov: { by: "human", how: "place", from: null, src: null },
       });
       void hydrate(node.id);
       return node;

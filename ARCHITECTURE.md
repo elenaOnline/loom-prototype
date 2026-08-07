@@ -56,8 +56,15 @@ File: `board.canvas` (JSON Canvas 1.0 — jsoncanvas.org). Be liberal on read.
 - Note → `{type:"text",text}` + `"x-powerset":{kind:"note"}`; the tether to its
   source is a real EDGE, not a node field (stage-5 deviation, logged below)
 - Edge → standard fields + `"x-powerset":{kind:"trail"|"manual"|"return"|"tether"}`
-- Top level extra: `"x-powerset":{topologyMode,contentMode,threads:[{id,name,nodeIds:[...]}],
+- Top level extra: `"x-powerset":{topologyMode,contentMode,threads:[{id,name,nodeIds:[...],prov}],
   marks:[{id,nodeId,quote,kind:"highlight"|"note",noteNodeId?}]}`
+- **Every node and edge carries `"x-powerset".prov`** (wave-2 §0):
+  `{at:ISO-8601-UTC|null, by:"human"|"agent", how:"wander"|"place"|"capture"|"mark"|"reply",
+  from:nodeId|null, src:url-or-path|null, x0,y0}` — `x0/y0` = world coords at birth, nodes only.
+  A **thread entry** carries the same object as a plain TOP-LEVEL `prov` field (it has no
+  `x-powerset` block to nest one in). Written at creation, backfilled on load, preserved verbatim.
+- **Unknown fields are preserved verbatim** on every object and at board level — additive schema
+  discipline. A hand-edit, a plugin's key, or an agent's extension survives a round trip.
 Marks anchor by quoted text (first occurrence), not offsets — survives re-render, fine for
 a prototype.
 
@@ -442,3 +449,73 @@ npx vite --port 5199 # then exercise the running app in a browser
   user re-picks); an "unbind" gesture (the only way to stop writing a file is `load…`/`save…`
   elsewhere, or a failed write); a fork ring on `manual` edges (an asserted edge has no primary
   chain to branch from); and any change to the culling policy itself.
+
+**2026-08-06 — wave 2, stage 0 (the provenance substrate).**
+
+No new module and no new UI: `model.ts` gains the vocabulary, `codec.ts` gains the read/write,
+and the four creation sites (`trail.ts`, `fibers.ts`, `cards.ts`, `threads.ts`) each say one
+honest thing about how the object they make came to be.
+
+- **`prov` lives INSIDE `x-powerset`, not beside it.** The wave-2 brief writes the block as
+  `"powerset:prov"`, but wave 1 already shipped the `x-powerset` namespace and the P0 agent
+  already wrote into it. A second namespace on the same object would be two conventions to
+  explain to the next agent, so the shape is `"x-powerset": { kind, title, ref, prov: {…} }` on
+  nodes and `"x-powerset": { kind, prov: {…} }` on edges.
+- **A thread entry carries `prov` at its TOP LEVEL** — this is P0 convention gap #1, closed. A
+  thread has no `x-powerset` block of its own to nest anything in; the P0 agent, told "inside
+  every x-powerset block you write", reasonably invented one. `readThreads` **migrates** that
+  nested `prov` up to the top level and drops the now-empty husk, so the P0 board opens and
+  re-saves with exactly one copy. Any *other* key in that nested block is kept.
+- **`prov` records `x0`/`y0`: the world coordinates a card was BORN at.** Not in the brief's
+  field list, added by it in prose — and it is the whole reason stage 3's `relax` can exist. It
+  is written by `makeNode` for every node from the spawn position, so no creation site can
+  forget it; a loaded card that lacks it takes its current position (the only honest guess).
+  Edges and threads have no position and carry neither key.
+- **The `how` verbs, as assigned by this stage** (the enum is the brief's; the mapping is a
+  decision): link click → `wander` (the spawned card, its trail edge, and a `linkback`/`return`
+  edge on a revisit) · seed or explicit open (`spawnRoot`) → `place` · alt-drag manual edge →
+  `place` (an assertion, not a walk) · fiber note card and its tether → `mark` · naming a
+  thread → `capture` (the moment a run becomes an object). `reply` is written by agents only,
+  never by this build.
+- **`src` on a trail is the href AS THE DOCUMENT WROTE IT**, not the resolved ref. `follow()`
+  gained a `rawHref` parameter for exactly this: a Wikipedia redirect slug
+  (`/wiki/Computer_algorithm`) reaches a card whose ref is the canonical title, and provenance
+  is the only place that difference can now be kept — FINDINGS learning 3 ("record what was
+  *followed*, canonicalize what was *reached*") is answered by the substrate rather than argued
+  about.
+- **Unknown fields now survive the round trip, everywhere.** New `Foreign` type
+  (`{ top?, ext? }`) on nodes, edges, threads and the board snapshot, plus a flat
+  `Record` on marks and an index signature on `Prov` itself. On read, every key this build does
+  not own is set aside; on write it is replayed, and a foreign key can never clobber an owned
+  one. So a JSON Canvas `color`, a plugin's block, a future wave's field, or an agent's extra
+  `prov` key all come back out byte-equal.
+  - **`fromSide`/`toSide` are deliberately NOT owned.** The renderer picks sides from live
+    geometry and only synthesizes advisory ones for foreign readers; treating them as foreign
+    means a file that states its own sides keeps them, and a file that does not still gets ours.
+  - **Marks get no `prov` this stage** (the brief scopes §0 to nodes, edges and thread entries)
+    — but a `prov` a file carries on a mark rides through verbatim, so the glyph stage can start
+    writing one without a format change.
+- **The codec is a FIXPOINT from the first save onward, not from the file.** The first save of a
+  wave-1 board legitimately adds the backfilled `prov` (that is the deliverable); every save
+  after that is value-identical. Verified against the real `Out/sample-board.canvas` and the P0
+  agent board: `load(save(x)) === save(x)`, and a structural diff ignoring `prov` shows the two
+  boards come back *identical* apart from the P0 thread's emptied nested block.
+- **Backfill is `{ by: "human", how: "wander", at: null, from: null, src: null }`**, per the
+  brief, uniformly — including for threads, which are never literally wandered into being.
+  `at: null` is deliberately distinguishable from a real stamp so a later prov lens can grey out
+  what it does not know instead of inventing a file mtime.
+  - One asymmetry worth knowing: an **absent** `from` key takes a sensible fallback (an edge's
+    source node, a thread's root), but an **explicit** `from: null` means null. Without that
+    distinction the codec is not idempotent — it writes `null` and reads back the fallback.
+- **`by` and `how` are narrowed to their unions on read.** A value outside them is a schema
+  violation the renderer cannot act on, so it is coerced to `human` / `wander`. This is the one
+  place the codec is not verbatim, and it only bites files that were already wrong.
+- **API changes, all contained:** `addEdge(from, to, kind, spec?)` — the old positional `label`
+  became `spec.label` (five call sites, none of which passed a label);
+  `addThread(name, nodeIds, prov?)`; `NodeSpec` gained `prov?`/`foreign?`.
+- **Not done, deliberately:** any UI (no prov lens, no agent-made badge, no "created" readout —
+  §8.3 is explicitly out of wave 2); prov on marks; a `pinned` field on threads (stage 1's, and
+  it already round-trips as a foreign key today); reading a file's mtime as the backfill stamp
+  (`null` is the honest answer and the file may be a copy); and rewriting the P0 folder's
+  `BOARD-CONVENTION.md` to the new thread-`prov` spot — that file lives outside this repo and
+  belongs to whoever runs the next agent experiment.
