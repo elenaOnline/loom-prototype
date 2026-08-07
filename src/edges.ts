@@ -188,7 +188,10 @@ export function createEdgeLayer(svg: SVGSVGElement, board: Board): EdgeLayer {
       change.kind === "content" ||
       change.kind === "meta" ||
       change.kind === "threads" ||
-      change.kind === "marks"
+      change.kind === "marks" ||
+      // a restore point being taken or spent moves no card; the moves it causes
+      // arrive separately as `position`
+      change.kind === "arrange"
     ) {
       return;
     }

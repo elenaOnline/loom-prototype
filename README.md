@@ -57,9 +57,19 @@ whole collection to the composer. Each glyph accrues its own commonplace file,
 `marks/<name>.md` — ordered quotes with source refs, rewritten on every change, and placeable
 on the board as a read-only card. Files are the API.
 
+**The board tangles, and untangling is a restore, not a sort.** Three verbs, truthfulness
+first. **relax** puts every card back where the *wander* left it — the position provenance
+recorded at birth, so nothing is invented; scope follows the selection (a thread, or the whole
+cloth). **comb** straightens and spaces the selected thread with the least motion that will
+do, keeping the walk's rhythm and never touching a card outside it. **pull taut** is the older
+lens: an even arc that discards the rhythm so the line reads as one object. All three are one
+press from `put back`, and the restore point lives in the *file* — pull a thread, reload the
+page, and it still un-pulls.
+
 **The board is a file.** Everything persists as
 [JSON Canvas](https://jsoncanvas.org) (`save…` / `load…`, plus localStorage autosave) with
-namespaced `x-powerset` extensions for edge kinds, threads, marks, and glyph stamps. The file is
+namespaced `x-powerset` extensions for edge kinds, threads, marks, glyph stamps, provenance,
+and the un-arrange restore points. The file is
 human-readable, git-diffable, opens in Obsidian, and is trivially readable *and writable* by
 a coding agent — which is the point. See [examples/sample-board.canvas](examples/sample-board.canvas)
 for a real session: a three-card wander, a return loop, a named thread, a highlight, and a
@@ -69,10 +79,10 @@ tethered note, all legible in ~90 lines of JSON.
 
 `1/2/3` topology mode · `f` zoom-to-fit · double-click paper fits · ctrl/⌘+wheel or pinch
 zooms at cursor · wheel pans · drag paper pans · drag a card by its title bar · alt-drag
-card→card draws a manual edge · click a trail edge to grab its thread · `t` pull taut /
-relax · `n` name · `p` pin (freeze a named thread's membership) · `c` hand off · Esc
-deselect · select text in a card for the mark pill · click a glyph stamp (or a toolbar chip)
-to light every place it was stamped.
+card→card draws a manual edge · click a trail edge to grab its thread · `t` pull taut / put
+back · `b` comb · `r` relax (`shift-r` for the whole cloth) · `n` name · `p` pin (freeze a
+named thread's membership) · `c` hand off · Esc deselect · select text in a card for the mark
+pill · click a glyph stamp (or a toolbar chip) to light every place it was stamped.
 
 ## Design language
 

@@ -15,7 +15,14 @@
 //           appears in the toolbar list. Clearing the name un-names it.
 //   PULL    "t" gathers the thread's cards onto an even arc in trail order and
 //           moves NOTHING else. Pressing "t" again restores every card to where
-//           it was. A pull is a LENS, not a layout: reversible or it is a lie.
+//           it was. A pull is a LENS, not a layout: reversible or it is a lie —
+//           and since wave-2 §3 the restore point is board state, so the lens
+//           does not silently become a layout when the page reloads.
+//   COMB    "b" straightens and spaces the same run with the least motion that
+//           will do (wave-2 §3, ideation §7.5 rung b). Local by construction.
+//   RELAX   "r" puts cards back where the WANDER left them — `prov.x0/y0`, rung
+//           (a), the truthful restore. Thread scope with a thread in hand, the
+//           whole cloth without one (shift-r forces the whole cloth).
 //   PIN     "p" freezes a named thread's membership. An unpinned thread FOLLOWS
 //           ITS TIP (wave-2 §1): spawn from either end and the name comes with
 //           you. Pinning says "this line of thought is these cards" and stops
@@ -41,19 +48,24 @@
 
 import type { Camera, Insets } from "./camera";
 import { boundsFrom, boundsOfRect } from "./camera";
-import type { Board, Change, LoomEdge, LoomNode, Thread } from "./model";
-import { growthForEdge, resolveThreadForRun, sameOrder } from "./model";
+import type {
+  ArrangeSpot,
+  ArrangeVerb,
+  Board,
+  Change,
+  LoomEdge,
+  LoomNode,
+  Thread,
+} from "./model";
+import { growthForEdge, nowStamp, resolveThreadForRun, sameOrder } from "./model";
+import type { Spot } from "./arrange";
+import { SCOPE_BOARD, combSpots, relaxSpots, scopeKey, tautSpots } from "./arrange";
 import type { EdgeLayer } from "./edges";
 import type { Host } from "./host";
 import { refOf } from "./codec";
 
-/** ms for the pull/relax ease — long enough to read as one object moving */
+/** ms for the arrangement ease — long enough to read as one object moving */
 const PULL_MS = 460;
-/** world px of clear air between cards on a taut thread */
-const TAUT_GAP = 56;
-/** a taut thread still hangs: bow as a fraction of its length, capped */
-const SAG_RATIO = 0.1;
-const SAG_MAX = 200;
 /** screen px between the nameplate and the top of the root card */
 const PLATE_LIFT = 30;
 
@@ -69,9 +81,14 @@ export interface ThreadLayer {
   selection(): ThreadSelection | null;
   selectThread(threadId: string, opts?: { zoom?: boolean }): void;
   clear(): void;
-  /** the experimental gesture; toggles */
+  /** `t` — pull the selected run taut, or put back whatever a verb last moved */
   togglePull(): void;
-  pulled(): boolean;
+  /** `b` — straighten and space the selected run, and nothing else (wave-2 §3) */
+  comb(): void;
+  /** `r` — every card back to where the wander left it; scope follows selection */
+  relax(scope?: "auto" | "board"): void;
+  /** which verb holds the live restore point for the current scope, if any */
+  restoreVerb(): ArrangeVerb | null;
   /** freeze / unfreeze the selected named thread's membership */
   togglePin(): void;
   /** true when a thread was selected and the handoff was written */
@@ -91,6 +108,12 @@ export interface ThreadLayerOptions {
   getInsets?: () => Partial<Insets>;
   onStatus?: (text: string) => void;
   onSelectionChange?: (selection: ThreadSelection | null) => void;
+  /**
+   * an arrangement verb ran, or its restore point appeared/vanished. Separate
+   * from `onSelectionChange` on purpose: a whole-board relax changes what the
+   * chrome must offer while changing nothing about what is selected.
+   */
+  onArrange?: () => void;
 }
 
 export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
@@ -491,118 +514,109 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     }
   });
 
-  // ---- pull taut ----------------------------------------------------------
-  // Reversible by construction: the previous positions of exactly the thread's
-  // cards are stashed, keyed by the run itself, before anything moves. Nothing
-  // outside the thread is ever touched — the rest of the cloth stays where the
-  // hand left it, which is the whole point of calling this a lens.
+  // ---- the entropy verbs (wave-2 §3, ideation §7.5) ------------------------
+  //
+  // Three verbs share one machine: compute a target position for a SET of cards,
+  // take a restore point first, ease everything there together.
+  //
+  //   PULL   t — the selected run onto an even arc. A lens.
+  //   COMB   b — the selected run straightened and spaced, minimal motion. Local
+  //              by construction: `combSpots` can only name cards it was handed.
+  //   RELAX  r — every card back to `prov.x0/y0`, where the wander put it.
+  //              Scope follows the selection: a thread if one is grabbed, the
+  //              whole cloth if not (shift-r forces the whole cloth).
+  //
+  // And one inverse: PUT BACK, the same `t`, which spends the restore point.
+  //
+  // The restore point lives in the BOARD now, not in this module (wave-1's known
+  // issue: reload mid-pull and the arc was permanent — a lens that outlives the
+  // session is just a layout you did not choose). It is keyed by scope and taken
+  // first-writer-wins, so a comb on top of a pull still puts back to where the
+  // HAND left the cards, not to the previous machine arrangement.
+  //
+  // Relax is the deeper undo and pull/comb are the shallower one, which is why
+  // relax also takes a restore point: going back to the wander is a big move,
+  // and the arrangement you spent an hour making by hand deserves one press to
+  // get it back. Nothing here is a one-way door.
 
-  type Spot = { x: number; y: number };
-
-  const stashes = new Map<string, Map<string, Spot>>();
   let raf = 0;
+  let guard = 0;
 
-  /**
-   * A named thread is keyed by its IDENTITY, not by its membership: a thread
-   * that follows its tip while pulled would otherwise change key mid-pull and
-   * strand the stash, making the pull irreversible — the exact failure wave 1
-   * already logs for reloads. An unnamed run has nothing but its membership to
-   * be keyed by. (Stage 3 persists this stash; keying by thread id is also the
-   * only form of it that can survive a reload.)
-   */
-  function stashKey(sel: ThreadSelection): string {
-    return sel.threadId ?? `run:${sel.nodeIds.join("|")}`;
+  /** the scope the verbs act on: the grabbed thread, else the whole cloth */
+  function currentKey(): string {
+    return selection ? scopeKey(selection.threadId, selection.nodeIds) : SCOPE_BOARD;
   }
 
-  function pulled(): boolean {
-    return selection !== null && stashes.has(stashKey(selection));
+  /** the verb that took the live restore point for this scope, if there is one */
+  function restoreVerb(): ArrangeVerb | null {
+    return board.arrangement(currentKey())?.verb ?? null;
   }
 
-  function spotsNow(nodeIds: string[]): Map<string, Spot> {
-    const out = new Map<string, Spot>();
-    for (const id of nodeIds) {
-      const n = board.node(id);
-      if (n) out.set(id, { x: n.x, y: n.y });
-    }
-    return out;
+  function notifyArrange(): void {
+    options.onArrange?.();
   }
 
-  /**
-   * An even arc through the thread's own centroid, aimed along its own
-   * root→tip heading, so a pull reads as *tidying what is there* rather than
-   * teleporting it somewhere new.
-   */
-  function tautSpots(nodeIds: string[]): Map<string, Spot> {
-    const nodes = nodeIds
+  /** the grabbed run, as nodes, in trail order */
+  function runNodes(): LoomNode[] {
+    if (!selection) return [];
+    return selection.nodeIds
       .map((id) => board.node(id))
       .filter((n): n is LoomNode => n !== undefined);
-    const out = new Map<string, Spot>();
-    if (nodes.length < 2) return out;
+  }
 
-    const first = nodes[0];
-    const last = nodes[nodes.length - 1];
-    if (!first || !last) return out;
-
-    let ux = last.x + last.width / 2 - (first.x + first.width / 2);
-    let uy = last.y + last.height / 2 - (first.y + first.height / 2);
-    let span = Math.hypot(ux, uy);
-    if (span < 1) {
-      ux = 1;
-      uy = 0;
-      span = 1;
+  function spotsNow(ids: Iterable<string>): ArrangeSpot[] {
+    const out: ArrangeSpot[] = [];
+    for (const id of ids) {
+      const n = board.node(id);
+      if (n) out.push({ id, x: n.x, y: n.y });
     }
-    ux /= span;
-    uy /= span;
-
-    let widthSum = 0;
-    let cx = 0;
-    let cy = 0;
-    for (const n of nodes) {
-      widthSum += n.width;
-      cx += n.x + n.width / 2;
-      cy += n.y + n.height / 2;
-    }
-    cx /= nodes.length;
-    cy /= nodes.length;
-
-    const step = Math.max(widthSum / nodes.length + TAUT_GAP, span / (nodes.length - 1));
-    const total = step * (nodes.length - 1);
-    const startX = cx - (ux * total) / 2;
-    const startY = cy - (uy * total) / 2;
-    // perpendicular, rotated so the bow rises against the reading direction
-    const px = uy;
-    const py = -ux;
-    const sag = Math.min(SAG_MAX, total * SAG_RATIO);
-
-    nodes.forEach((n, i) => {
-      const t = i / (nodes.length - 1);
-      const bow = Math.sin(Math.PI * t) * sag;
-      out.set(n.id, {
-        x: Math.round(startX + ux * step * i + px * bow - n.width / 2),
-        y: Math.round(startY + uy * step * i + py * bow - n.height / 2),
-      });
-    });
     return out;
+  }
+
+  function landOn(targets: Map<string, Spot>): void {
+    board.moveNodes(Array.from(targets, ([id, s]) => ({ id, x: s.x, y: s.y })));
   }
 
   function animateTo(targets: Map<string, Spot>): void {
-    const from = spotsNow(Array.from(targets.keys()));
+    const from = spotsNow(targets.keys());
     if (raf !== 0) cancelAnimationFrame(raf);
+    if (guard !== 0) window.clearTimeout(guard);
+    // THE EASE IS DECORATION; THE MOVE IS NOT. A background or throttled tab
+    // starves requestAnimationFrame, and the restore point is spent the moment
+    // the verb runs — so an animation that never gets a frame would consume the
+    // undo without moving anything. This net puts the cards where the verb said
+    // they go, late but certainly.
+    guard = window.setTimeout(() => {
+      guard = 0;
+      if (raf === 0) return;
+      cancelAnimationFrame(raf);
+      raf = 0;
+      landOn(targets);
+    }, PULL_MS + 250);
     const startedAt = performance.now();
     const step = (now: number): void => {
       const raw = (now - startedAt) / PULL_MS;
       const t = raw >= 1 ? 1 : easeInOutCubic(raw < 0 ? 0 : raw);
-      for (const [id, to] of targets) {
-        const a = from.get(id);
-        if (!a) continue;
-        board.moveNode(
-          id,
-          Math.round(a.x + (to.x - a.x) * t),
-          Math.round(a.y + (to.y - a.y) * t),
-        );
+      // one board change per frame, not one per card: a whole-board relax moves
+      // 30 cards, and 30 emits a frame would have every layer downstream redraw
+      // 30 times for one visible motion
+      const frame: ArrangeSpot[] = [];
+      for (const a of from) {
+        const to = targets.get(a.id);
+        if (!to) continue;
+        frame.push({
+          id: a.id,
+          x: Math.round(a.x + (to.x - a.x) * t),
+          y: Math.round(a.y + (to.y - a.y) * t),
+        });
       }
+      board.moveNodes(frame);
       if (raw >= 1) {
         raf = 0;
+        if (guard !== 0) {
+          window.clearTimeout(guard);
+          guard = 0;
+        }
         return;
       }
       raf = requestAnimationFrame(step);
@@ -610,29 +624,137 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     raf = requestAnimationFrame(step);
   }
 
-  function togglePull(): void {
+  /** take the restore point for this scope — a no-op if one is already held */
+  function keep(verb: ArrangeVerb, ids: Iterable<string>): void {
+    board.setArrangement({
+      key: currentKey(),
+      verb,
+      at: nowStamp(),
+      spots: spotsNow(ids),
+    });
+  }
+
+  /** spend the restore point: every card back where the hand left it */
+  function putBack(): boolean {
+    const key = currentKey();
+    const entry = board.arrangement(key);
+    if (!entry) return false;
+    const targets = new Map<string, Spot>();
+    for (const s of entry.spots) {
+      if (board.node(s.id)) targets.set(s.id, { x: s.x, y: s.y });
+    }
+    board.clearArrangement(key);
+    if (targets.size === 0) {
+      status("nothing left to put back — those cards have gone");
+      notifyArrange();
+      return true;
+    }
+    animateTo(targets);
+    // pull → un-pulled · comb → un-combed · relax → un-relaxed
+    status(`un-${entry.verb}ed — ${count(targets.size, "card")} back where the hand left ${
+      targets.size === 1 ? "it" : "them"
+    }`);
+    notifyArrange();
+    return true;
+  }
+
+  function pullTaut(): void {
     if (!selection) {
       status("no thread selected — click one of its edges first");
       return;
     }
-    const key = stashKey(selection);
-    const stashed = stashes.get(key);
-    if (stashed) {
-      stashes.delete(key);
-      animateTo(stashed);
-      status("thread relaxed — every card back where it was");
-      options.onSelectionChange?.(selection);
-      return;
-    }
-    const targets = tautSpots(selection.nodeIds);
+    const nodes = runNodes();
+    const targets = tautSpots(nodes);
     if (targets.size === 0) {
       status("a thread needs two cards before it can be pulled");
       return;
     }
-    stashes.set(key, spotsNow(selection.nodeIds));
+    keep("pull", targets.keys());
     animateTo(targets);
-    status(`pulled taut — ${targets.size} cards on the line · t again to relax`);
-    options.onSelectionChange?.(selection);
+    status(`pulled taut — ${targets.size} cards on the line · t again to put them back`);
+    notifyArrange();
+  }
+
+  /**
+   * Rung (b). The brief asks for a verb that is strictly local, and asks for the
+   * wave-1 promise to be VERIFIED rather than believed: every id `combSpots`
+   * returns came out of the array it was handed, so a card outside the run
+   * cannot be moved by this code path even by accident.
+   */
+  function comb(): void {
+    if (!selection) {
+      status("comb works on a grabbed thread — click one of its edges first");
+      return;
+    }
+    const nodes = runNodes();
+    const targets = combSpots(nodes);
+    if (targets.size === 0) {
+      status("a thread needs two cards before it can be combed");
+      return;
+    }
+    let moved = 0;
+    for (const [id, spot] of targets) {
+      const n = board.node(id);
+      if (n && (Math.round(n.x) !== spot.x || Math.round(n.y) !== spot.y)) moved += 1;
+    }
+    if (moved === 0) {
+      status("already combed — this thread is straight and has room");
+      return;
+    }
+    keep("comb", targets.keys());
+    animateTo(targets);
+    status(`combed — ${count(moved, "card")} straightened, nothing else touched`);
+    notifyArrange();
+  }
+
+  /**
+   * Rung (a). The truthful one: every target is a coordinate this board itself
+   * recorded when the card arrived. Where it has nothing recorded it says so
+   * instead of inventing a tidy position, which is the whole difference between
+   * this verb and the auto-sort it exists to make unnecessary.
+   */
+  function relax(scope: "auto" | "board" = "auto"): void {
+    // asking for the whole cloth while a thread is grabbed LETS GO of it first:
+    // the scope a verb acted on has to be the scope the chrome is showing, or
+    // the restore point files itself somewhere the toolbar cannot offer back
+    if (scope === "board" && selection) clear();
+    const wholeBoard = selection === null;
+    const nodes = wholeBoard ? board.nodes() : runNodes();
+    if (nodes.length === 0) {
+      status("nothing on the board to relax");
+      return;
+    }
+    const where = wholeBoard ? "the cloth" : "this thread";
+    const { targets, unknown, backfilled } = relaxSpots(nodes);
+    if (targets.size === 0) {
+      // say WHY there is nothing to do — "nothing happened" is the one status
+      // line that teaches nothing
+      if (unknown === nodes.length) {
+        status(`${where}: no card here recorded where it was born — nothing to relax`);
+      } else if (backfilled === nodes.length - unknown) {
+        status(
+          `${where} predates provenance: every birthplace was backfilled on first open, so this IS the as-wandered arrangement`,
+        );
+      } else {
+        status(`${where} is already as the wander left it`);
+      }
+      return;
+    }
+    keep("relax", targets.keys());
+    animateTo(targets);
+    const aside = unknown === 0 ? "" : ` · ${count(unknown, "card")} never recorded a birthplace`;
+    status(
+      `relaxed ${where} — ${count(targets.size, "card")} back where the wander left ${
+        targets.size === 1 ? "it" : "them"
+      }${aside} · t to put them back`,
+    );
+    notifyArrange();
+  }
+
+  /** `t`: put back if there is something to put back, otherwise pull */
+  function togglePull(): void {
+    if (putBack()) return;
+    pullTaut();
   }
 
   // ---- handoff ------------------------------------------------------------
@@ -709,6 +831,17 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
       togglePull();
       return;
     }
+    if (e.key === "b" || e.key === "B") {
+      e.preventDefault();
+      comb();
+      return;
+    }
+    if (e.key === "r" || e.key === "R") {
+      e.preventDefault();
+      // shift asks for the whole cloth even with a thread in hand
+      relax(e.shiftKey ? "board" : "auto");
+      return;
+    }
     if (e.key === "p" || e.key === "P") {
       e.preventDefault();
       togglePin();
@@ -759,6 +892,9 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
 
   const unsubscribe = board.onChange((change: Change) => {
     if (change.kind === "graph") applyGrowth(change.edgeIds);
+    // a load brings its own restore points; a deletion can retire one. Either
+    // way the chrome's offer has to be re-read from the model, not remembered.
+    if (change.kind === "reset" || change.kind === "graph") notifyArrange();
     if (!selection) return;
     if (change.kind === "reset") {
       setSelection(null);
@@ -787,11 +923,14 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     selectThread,
     clear,
     togglePull,
-    pulled,
+    comb,
+    relax,
+    restoreVerb,
     togglePin,
     handOff,
     destroy() {
       if (raf !== 0) cancelAnimationFrame(raf);
+      if (guard !== 0) window.clearTimeout(guard);
       for (const [id, z] of borrowedZ) {
         const el = options.getCardEl(id);
         if (el) el.style.zIndex = z;
@@ -806,6 +945,10 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
       plate.remove();
     },
   };
+}
+
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 function easeInOutCubic(t: number): number {

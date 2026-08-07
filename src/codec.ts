@@ -8,6 +8,8 @@
 // Article/markdown bodies are never written — they are re-fetched on load.
 
 import type {
+  ArrangeSpot,
+  Arrangement,
   Board,
   BoardSnapshot,
   BrokenLink,
@@ -27,6 +29,7 @@ import type {
   TopologyMode,
 } from "./model";
 import {
+  ARRANGE_VERBS,
   DEFAULT_CARD_H,
   DEFAULT_CARD_W,
   PROV_BY,
@@ -57,6 +60,7 @@ const EDGE_EXT_KEYS = new Set(["kind", "prov"]);
 const THREAD_KEYS = new Set(["id", "name", "nodeIds", "pinned", "broken", "prov"]);
 const MARK_KEYS = new Set(["id", "nodeId", "quote", "kind", "noteNodeId"]);
 const GLYPH_KEYS = new Set(["id", "glyph", "nodeId", "quote", "prov"]);
+const ARRANGE_KEYS = new Set(["key", "verb", "at", "spots"]);
 const BOARD_BASE_KEYS = new Set(["nodes", "edges", "x-powerset"]);
 const BOARD_EXT_KEYS = new Set([
   "version",
@@ -66,6 +70,7 @@ const BOARD_EXT_KEYS = new Set([
   "threads",
   "marks",
   "glyphs",
+  "arrangements",
 ]);
 
 /** the payload key a node of this kind carries is ours; on any other kind it is not */
@@ -201,6 +206,21 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
     return out;
   });
 
+  // The un-arrange stash, made persistent (wave-2 §3). Wave 1 kept it in a
+  // module-local Map: reload mid-pull and the arc was permanent. It is written
+  // as plain coordinates so a hand-edit or another reader can see exactly what
+  // "put back" would do — no diff, no delta, no cleverness.
+  const arrangements: Json[] = snapshot.arrangements.map((a) => {
+    const out: Json = {
+      key: a.key,
+      verb: a.verb,
+      at: a.at,
+      spots: a.spots.map((s) => ({ id: s.id, x: s.x, y: s.y })),
+    };
+    replay(out, a.foreign);
+    return out;
+  });
+
   const ext: Json = {
     version: 1,
     topologyMode: snapshot.topologyMode,
@@ -212,6 +232,8 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
     // that never used the palette keep their exact shape (fixpoint preserved:
     // absent reads back as [], which writes back as absent)
     ...(glyphs.length === 0 ? {} : { glyphs }),
+    // same discipline: a board nobody has arranged carries no key at all
+    ...(arrangements.length === 0 ? {} : { arrangements }),
   };
   replay(ext, snapshot.foreign?.ext);
 
@@ -286,6 +308,7 @@ export function fromCanvas(raw: unknown): Partial<BoardSnapshot> | null {
     threads: readThreads(ext["threads"]),
     marks: readMarks(ext["marks"]),
     glyphs: readGlyphs(ext["glyphs"]),
+    arrangements: readArrangements(ext["arrangements"]),
     topologyMode: readTopology(ext["topologyMode"]),
     contentMode: readContent(ext["contentMode"]),
   };
@@ -467,6 +490,43 @@ function readGlyphs(raw: unknown): GlyphStamp[] {
     const foreign = pickForeign(item, GLYPH_KEYS);
     if (foreign) stamp.foreign = foreign;
     out.push(stamp);
+  }
+  return out;
+}
+
+/**
+ * The persistent un-arrange stash (wave-2 §3). Read liberally: an entry with no
+ * key or no usable spot is dropped rather than kept as a restore point that
+ * cannot restore, and `verb` is narrowed to its union (the label the toolbar
+ * shows has to be one of three words). Spots are strict `{id,x,y}` triples —
+ * unlike the objects above, there is nothing here a later wave would extend
+ * per-spot, and an entry's own unknown keys still ride through `foreign`.
+ */
+function readArrangements(raw: unknown): Arrangement[] {
+  const out: Arrangement[] = [];
+  for (const item of asArray(raw)) {
+    if (!isObject(item)) continue;
+    const key = str(item["key"]);
+    if (!key) continue;
+    const spots: ArrangeSpot[] = [];
+    for (const s of asArray(item["spots"])) {
+      if (!isObject(s)) continue;
+      const id = str(s["id"]);
+      const x = num(s["x"]);
+      const y = num(s["y"]);
+      if (!id || x === undefined || y === undefined) continue;
+      spots.push({ id, x, y });
+    }
+    if (spots.length === 0) continue;
+    const entry: Arrangement = {
+      key,
+      verb: ARRANGE_VERBS.find((v) => v === item["verb"]) ?? "pull",
+      at: typeof item["at"] === "string" ? item["at"] : null,
+      spots,
+    };
+    const foreign = pickForeign(item, ARRANGE_KEYS);
+    if (foreign) entry.foreign = foreign;
+    out.push(entry);
   }
   return out;
 }

@@ -553,6 +553,7 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
       change.kind === "position" ||
       change.kind === "meta" ||
       change.kind === "threads" ||
+      change.kind === "arrange" ||
       // a glyph stamp never removes a fiber span (glyphs.ts unwraps only its
       // own class), so re-wrapping every body on a stamp would be pure churn
       change.kind === "glyphs"

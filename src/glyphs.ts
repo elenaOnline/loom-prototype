@@ -490,7 +490,14 @@ export function createGlyphLayer(options: GlyphLayerOptions): GlyphLayer {
   window.addEventListener("keydown", onKeyDown);
 
   const unsubscribe = board.onChange((change: Change) => {
-    if (change.kind === "position" || change.kind === "meta" || change.kind === "threads") return;
+    if (
+      change.kind === "position" ||
+      change.kind === "meta" ||
+      change.kind === "threads" ||
+      change.kind === "arrange"
+    ) {
+      return;
+    }
     if (change.kind === "reset") {
       selected = null;
       written.clear();

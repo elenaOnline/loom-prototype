@@ -3,10 +3,11 @@
 // Everything here is a switch on the experiment: which corpus, which topology,
 // which thread, where the board stands. Active state is inversion (ink ground,
 // paper text), never a tint. Keys: 1/2/3 topology · f fit (camera owns it) ·
-// t pull taut, p pin, and Escape/n naming (threads.ts owns those) · c hand off.
+// t pull taut / put back, b comb, r relax, p pin, Escape/n naming (threads.ts
+// owns those) · c hand off.
 
 import type { Camera } from "./camera";
-import type { Board, ContentMode, TopologyMode } from "./model";
+import type { ArrangeVerb, Board, ContentMode, TopologyMode } from "./model";
 import { GLYPH_PALETTE, TOPOLOGY_MODES, glyphChar } from "./model";
 import type { SaveState } from "./codec";
 
@@ -14,7 +15,14 @@ export interface Ui {
   status(text: string): void;
   setSaveState(state: SaveState, detail?: string): void;
   /** the thread list is a readout of the model; this is only its highlight */
-  setActiveThread(threadId: string | null, pulled: boolean): void;
+  setActiveThread(threadId: string | null): void;
+  /**
+   * What the entropy verbs can do right now: `restore` is the verb holding the
+   * live restore point for the current scope (null = nothing to put back), and
+   * `hasSelection` is whether a run is in hand — pull and comb need one, relax
+   * does not (without one it means the whole cloth).
+   */
+  setArrange(restore: ArrangeVerb | null, hasSelection: boolean): void;
   /** which glyph is selected as a unit, if any */
   setActiveGlyph(glyph: string | null): void;
   /** the altitude word from tiers.ts — fiber · thread · cloth */
@@ -36,6 +44,10 @@ export interface UiOptions {
   canLoadFromDisk: boolean;
   onHandOff: () => void;
   onPull: () => void;
+  /** straighten + space the selected thread, never anything else (wave-2 §3) */
+  onComb: () => void;
+  /** restore as-wandered positions; `board` forces whole-cloth scope */
+  onRelax: (scope: "auto" | "board") => void;
   /** freeze / unfreeze the selected thread's membership (wave-2 §1) */
   onPin: () => void;
   onThreadPick: (threadId: string) => void;
@@ -92,16 +104,25 @@ export function createUi(options: UiOptions): Ui {
   glyphFileButton.title = "place the selected glyph's marks/<name>.md on the board";
   glyphGroup.append(glyphList, glyphFileButton);
 
-  const threadGroup = group("thread");
+  // The entropy verbs (wave-2 §3) get their own group: `relax` acts on the
+  // whole cloth when nothing is grabbed, so filing it under "thread" would have
+  // been a lie about its reach. One button carries pull AND its inverse because
+  // they are one gesture — the label says which way it will go.
+  const arrangeGroup = group("arrange");
   const pullButton = button("pull taut", () => options.onPull());
-  pullButton.title = "t — gather the selected thread onto an even arc (reversible)";
+  const combButton = button("comb", () => options.onComb());
+  combButton.title = "b — straighten and space the selected thread, moving nothing else";
+  const relaxButton = button("relax", (e) => options.onRelax(e.shiftKey ? "board" : "auto"));
+  arrangeGroup.append(pullButton, combButton, relaxButton);
+
+  const threadGroup = group("thread");
   const pinButton = button("pin", () => options.onPin());
   pinButton.title = "p — freeze this thread's membership; unpinned, it follows its tip";
   const handButton = button("→ composer", () => options.onHandOff());
   handButton.title = "c — type the thread's ordered refs into the composer strip";
   const threadList = document.createElement("span");
   threadList.className = "tb-threads";
-  threadGroup.append(pullButton, pinButton, handButton, threadList);
+  threadGroup.append(pinButton, handButton, threadList);
 
   const boardGroup = group("board");
   boardGroup.appendChild(button("fit", () => camera.zoomToFit()));
@@ -141,6 +162,7 @@ export function createUi(options: UiOptions): Ui {
     modeGroup,
     topoGroup,
     glyphGroup,
+    arrangeGroup,
     threadGroup,
     boardGroup,
     statusEl,
@@ -163,7 +185,8 @@ export function createUi(options: UiOptions): Ui {
   }
 
   let activeThread: string | null = null;
-  let isPulled = false;
+  let restoreOffer: ArrangeVerb | null = null;
+  let hasSelection = false;
   let activeGlyph: string | null = null;
 
   function refresh(): void {
@@ -183,6 +206,7 @@ export function createUi(options: UiOptions): Ui {
       count(board.glyphs().length, "stamp"),
     ].join(" · ");
     refreshThreads();
+    refreshArrange();
     refreshGlyphs();
   }
 
@@ -230,11 +254,27 @@ export function createUi(options: UiOptions): Ui {
     refreshGlyphs();
   }
 
+  /**
+   * The verbs, as a readout of what they would do. The pull button carries its
+   * own inverse: while a restore point is held it says "put back" and inverts,
+   * which is the same state-is-geometry idiom the pins and chips use. The label
+   * names the verb that will run, never the state it is in.
+   */
+  function refreshArrange(): void {
+    pullButton.textContent = restoreOffer === null ? "pull taut" : "put back";
+    toggle(pullButton, restoreOffer !== null);
+    pullButton.title =
+      restoreOffer === null
+        ? "t — gather the selected thread onto an even arc (reversible)"
+        : `t — put every card back where it was before the ${restoreOffer} (survives reload)`;
+    combButton.disabled = !hasSelection;
+    relaxButton.title = hasSelection
+      ? "r — put this thread back where the wander left it · shift for the whole cloth"
+      : "r — put every card back where the wander left it (nothing selected = whole cloth)";
+  }
+
   /** the list IS the model's thread array — kept names, in the order kept */
   function refreshThreads(): void {
-    pullButton.textContent = isPulled ? "relax" : "pull taut";
-    toggle(pullButton, isPulled);
-
     const threads = board.threads();
     const active = activeThread ? board.thread(activeThread) : undefined;
     pinButton.textContent = active?.pinned ? "unpin" : "pin";
@@ -269,10 +309,15 @@ export function createUi(options: UiOptions): Ui {
     threadList.replaceChildren(frag);
   }
 
-  function setActiveThread(threadId: string | null, pulled: boolean): void {
+  function setActiveThread(threadId: string | null): void {
     activeThread = threadId;
-    isPulled = pulled;
     refreshThreads();
+  }
+
+  function setArrange(restore: ArrangeVerb | null, selected: boolean): void {
+    restoreOffer = restore;
+    hasSelection = selected;
+    refreshArrange();
   }
 
   function setSaveState(state: SaveState, detail?: string): void {
@@ -341,6 +386,7 @@ export function createUi(options: UiOptions): Ui {
     status,
     setSaveState,
     setActiveThread,
+    setArrange,
     setActiveGlyph,
     setTier,
     refresh,
@@ -375,7 +421,7 @@ function group(label: string): HTMLElement {
   return wrap;
 }
 
-function button(label: string, onClick: () => void): HTMLButtonElement {
+function button(label: string, onClick: (e: MouseEvent) => void): HTMLButtonElement {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "tb-button";
@@ -383,7 +429,7 @@ function button(label: string, onClick: () => void): HTMLButtonElement {
   b.addEventListener("click", (e) => {
     e.preventDefault();
     b.blur();
-    onClick();
+    onClick(e);
   });
   return b;
 }

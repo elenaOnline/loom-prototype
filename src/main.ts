@@ -116,8 +116,12 @@ const threads = createThreadLayer({
   getCardEl: (id) => cards.element(id),
   getInsets: insets,
   onStatus: (text) => ui.status(text),
+  // an arrangement verb changes what the chrome may offer without changing the
+  // selection (a whole-board relax), so the two readouts are refreshed apart
+  onArrange: () => ui.setArrange(threads.restoreVerb(), threads.selection() !== null),
   onSelectionChange: (selection) => {
-    ui.setActiveThread(selection?.threadId ?? null, threads.pulled());
+    ui.setActiveThread(selection?.threadId ?? null);
+    ui.setArrange(threads.restoreVerb(), selection !== null);
     // two species of thread, one cloth: a trail selection and a glyph selection
     // both claim the same inversion, so only one of them may be lit at a time
     if (selection) glyphs.clear();
@@ -148,6 +152,8 @@ const ui = createUi({
   canLoadFromDisk: supportsOpenFilePicker(),
   onHandOff: handOffSelection,
   onPull: () => threads.togglePull(),
+  onComb: () => threads.comb(),
+  onRelax: (scope) => threads.relax(scope),
   onPin: () => threads.togglePin(),
   onThreadPick: (id) => threads.selectThread(id),
   onGlyphPick: (glyph) => {

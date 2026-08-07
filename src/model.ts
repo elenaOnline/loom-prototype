@@ -319,12 +319,49 @@ export interface GlyphSpec {
   id?: string;
 }
 
+/** the entropy verbs, in the ideation's truthfulness order (§7.5 rungs a–b) */
+export type ArrangeVerb = "pull" | "comb" | "relax";
+
+export const ARRANGE_VERBS: readonly ArrangeVerb[] = ["pull", "comb", "relax"];
+
+/** one card's position inside a restore point */
+export interface ArrangeSpot {
+  id: string;
+  x: number;
+  y: number;
+}
+
+/**
+ * A RESTORE POINT: where a set of cards stood immediately before an arrangement
+ * verb moved them (wave-2 §3). Wave 1 kept this in a module-local Map, so a
+ * reload mid-pull made the arc permanent — a lens that survives as a layout is
+ * a lie, and it was the known issue the brief names. Now it is board state, so
+ * it round-trips through `x-powerset.arrangements` and un-arranging survives a
+ * reload, a reopen, and a hand-edit.
+ *
+ * One entry per SCOPE (`arrange.scopeKey`: `board` · `thread:<id>` · `run:<ids>`),
+ * and the entry records the FIRST verb applied since the last restore — comb
+ * after a pull does not move the restore point, because "put it back" means
+ * back to where the hand left it, not back to the previous machine arrangement.
+ */
+export interface Arrangement {
+  key: string;
+  verb: ArrangeVerb;
+  /** ISO-8601 UTC when the restore point was taken; `null` if a file omitted it */
+  at: string | null;
+  spots: ArrangeSpot[];
+  /** unknown keys on the entry, carried verbatim */
+  foreign?: Record<string, unknown>;
+}
+
 export interface BoardSnapshot {
   nodes: LoomNode[];
   edges: LoomEdge[];
   threads: Thread[];
   marks: Mark[];
   glyphs: GlyphStamp[];
+  /** the persistent pull/comb/relax undo stash, keyed by scope */
+  arrangements: Arrangement[];
   topologyMode: TopologyMode;
   contentMode: ContentMode;
   folderName?: string;
@@ -336,7 +373,9 @@ export interface BoardSnapshot {
  * What changed. `graph` = nodes/edges added or removed · `position` = a node
  * moved or resized · `content` = title/body/status · `meta` = modes ·
  * `threads` = the named-thread list · `marks` = the fibers on a card ·
- * `glyphs` = the meaning-mark stamps · `reset` = the whole board was replaced.
+ * `glyphs` = the meaning-mark stamps · `arrange` = a restore point was taken or
+ * spent (no card moved — the moves themselves arrive as `position`) ·
+ * `reset` = the whole board was replaced.
  */
 export type ChangeKind =
   | "graph"
@@ -346,6 +385,7 @@ export type ChangeKind =
   | "threads"
   | "marks"
   | "glyphs"
+  | "arrange"
   | "reset";
 
 export interface Change {
@@ -411,6 +451,12 @@ export interface Board {
   /** removes the PLACEMENT: the node and its incident edges leave the board */
   removeNode(id: string): void;
   moveNode(id: string, x: number, y: number): void;
+  /**
+   * Move many cards as ONE change. An arrangement verb animating 28 cards would
+   * otherwise emit 28 changes a frame, and every layer downstream (edges, tiers,
+   * autosave) would do 28× the work per frame for one visible motion.
+   */
+  moveNodes(spots: readonly ArrangeSpot[]): void;
   sizeNode(id: string, width: number, height: number): void;
   setContent(
     id: string,
@@ -437,6 +483,14 @@ export interface Board {
   /** acknowledge a break: the record goes, the surviving membership stays */
   mendThread(id: string): void;
   removeThread(id: string): void;
+
+  /** every live restore point (wave-2 §3) — the persistent un-arrange stash */
+  arrangements(): Arrangement[];
+  arrangement(key: string): Arrangement | undefined;
+  /** take a restore point; an existing one for this scope is NOT overwritten */
+  setArrangement(entry: Arrangement): void;
+  /** spend or discard a restore point */
+  clearArrangement(key: string): void;
 
   topologyMode(): TopologyMode;
   setTopologyMode(mode: TopologyMode): void;
@@ -648,6 +702,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
   let threads: Thread[] = [];
   let marks: Mark[] = [];
   let stamps: GlyphStamp[] = [];
+  let arrangements: Arrangement[] = [];
   let topology: TopologyMode = "returnedge";
   let content: ContentMode = "wiki";
   let folder: string | undefined;
@@ -702,6 +757,16 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     if (foreign) out.foreign = foreign;
     else delete out.foreign;
     return out;
+  }
+
+  function adoptArrangement(a: Arrangement): Arrangement {
+    return {
+      key: a.key,
+      verb: a.verb,
+      at: a.at ?? null,
+      spots: a.spots.map((s) => ({ id: s.id, x: s.x, y: s.y })),
+      ...(a.foreign ? { foreign: { ...a.foreign } } : {}),
+    };
   }
 
   function adoptEdge(e: LoomEdge): LoomEdge {
@@ -802,6 +867,12 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       // collection meaning exactly what it meant, so the stamp just goes and the
       // glyph file regenerates one entry shorter. No break record to keep.
       stamps = stamps.filter((g) => g.nodeId !== id);
+      // a restore point loses the card too — "put back" can only put back what
+      // is still on the board. An entry left with nothing to restore is dropped
+      // rather than kept as an offer that would do nothing.
+      arrangements = arrangements
+        .map((a) => ({ ...a, spots: a.spots.filter((s) => s.id !== id) }))
+        .filter((a) => a.spots.length > 0);
       // A thread, though, does NOT quietly shrink. Wave-2 §1's hard constraint
       // is that a name never detaches silently, and wave 1 broke it twice over:
       // the membership shrank (so the name stopped matching the run) and a
@@ -830,6 +901,19 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       n.x = x;
       n.y = y;
       emit({ kind: "position", nodeIds: [id] });
+    },
+
+    moveNodes(spots) {
+      const moved: string[] = [];
+      for (const spot of spots) {
+        const n = nodes.get(spot.id);
+        if (!n || (n.x === spot.x && n.y === spot.y)) continue;
+        n.x = spot.x;
+        n.y = spot.y;
+        moved.push(spot.id);
+      }
+      if (moved.length === 0) return;
+      emit({ kind: "position", nodeIds: moved });
     },
 
     sizeNode(id, width, height) {
@@ -990,6 +1074,38 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       emit({ kind: "threads" });
     },
 
+    arrangements: () => arrangements.map(adoptArrangement),
+    arrangement: (key) => {
+      const hit = arrangements.find((a) => a.key === key);
+      return hit ? adoptArrangement(hit) : undefined;
+    },
+    setArrangement(entry) {
+      // FIRST-WRITER-WINS, deliberately. The restore point answers "where were
+      // these cards before the machine started arranging them" — a comb applied
+      // on top of a pull must not quietly redefine that as "before the comb", or
+      // two verbs in a row become unreversible one verb at a time.
+      if (entry.spots.length === 0) return;
+      if (arrangements.some((a) => a.key === entry.key)) return;
+      // A wider verb RETIRES the narrower points it subsumes. Observed live:
+      // pull a thread, then relax the whole cloth, and the thread still offered
+      // "put back" — to positions from before a move that had since happened to
+      // every one of its cards. A restore point has to mean "one press undoes
+      // the last machine arrangement of these cards", so a point whose whole
+      // card set has just been arranged again is spent, not stale. Overlapping
+      // threads are deliberately NOT retired: sharing a card is ordinary, and
+      // only total containment makes the older point meaningless.
+      const covered = new Set(entry.spots.map((s) => s.id));
+      arrangements = arrangements.filter((a) => !a.spots.every((s) => covered.has(s.id)));
+      arrangements = [...arrangements, adoptArrangement(entry)];
+      emit({ kind: "arrange" });
+    },
+    clearArrangement(key) {
+      const next = arrangements.filter((a) => a.key !== key);
+      if (next.length === arrangements.length) return;
+      arrangements = next;
+      emit({ kind: "arrange" });
+    },
+
     topologyMode: () => topology,
     setTopologyMode(mode) {
       if (topology === mode) return;
@@ -1016,6 +1132,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
         threads: threads.map(adoptThread),
         marks: marks.map((m) => ({ ...m, ...(m.foreign ? { foreign: { ...m.foreign } } : {}) })),
         glyphs: stamps.map(adoptGlyph),
+        arrangements: arrangements.map(adoptArrangement),
         topologyMode: topology,
         contentMode: content,
         ...(folder === undefined ? {} : { folderName: folder }),
@@ -1036,6 +1153,17 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
         ...(m.foreign ? { foreign: { ...m.foreign } } : {}),
       }));
       stamps = (snapshot.glyphs ?? []).map(adoptGlyph);
+      // a restore point can only restore cards that are still here. Dead spots
+      // are dropped the same way an edge with a missing endpoint is, and an
+      // entry left with nothing to put back goes with them — otherwise the
+      // toolbar offers a "put back" that would move nothing.
+      arrangements = (snapshot.arrangements ?? [])
+        .map((a) => {
+          const kept = adoptArrangement(a);
+          kept.spots = kept.spots.filter((s) => nodes.has(s.id));
+          return kept;
+        })
+        .filter((a) => a.spots.length > 0);
       topology = snapshot.topologyMode ?? topology;
       content = snapshot.contentMode ?? content;
       folder = snapshot.folderName;
@@ -1049,6 +1177,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       threads = [];
       marks = [];
       stamps = [];
+      arrangements = [];
       // a cleared board is a new board — it inherits nobody's foreign fields
       boardForeign = undefined;
       emit({ kind: "reset" });

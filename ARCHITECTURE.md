@@ -37,9 +37,16 @@ sessions compose instead of churning. Deviate only with a dated note added at th
 - `src/trail.ts` — link-click → spawn logic; the **three-way topology toggle**
   (`duplicate | linkback | returnedge`); placement of spawned cards near source.
 - `src/threads.ts` — first-class threads: build from trail selection, name, highlight as
-  unit, pull-taut layout gesture, pin (freeze membership), handoff → `host.sendToComposer(...)`.
-  Thread IDENTITY (tip-tracking, branch, break) is `model.ts`'s: `growthForEdge` and
+  unit, pin (freeze membership), handoff → `host.sendToComposer(...)`, and the gestures for
+  the three ENTROPY VERBS plus their shared inverse (`t` pull/put back · `b` comb · `r`
+  relax). Thread IDENTITY (tip-tracking, branch, break) is `model.ts`'s: `growthForEdge` and
   `resolveThreadForRun` are pure predicates there; this module only applies them.
+- `src/arrange.ts` — the entropy verbs as PURE geometry (wave-2 §3): `relaxSpots` (back to
+  `prov.x0/y0`), `combSpots` (straighten + space the run, minimal motion), `tautSpots` (the
+  even arc, moved here from `threads.ts`), and `scopeKey`. Every function takes an array of
+  nodes and returns positions for ids drawn only from that array — which is how "a verb never
+  moves a card outside the selection" is enforced rather than promised. No DOM, no board, no
+  animation: `threads.ts` owns the gesture, the ease and the restore point.
 - `src/tiers.ts` — semantic zoom: swap card body by z band. Bands (tune by feel):
   z ≥ 0.55 full · 0.18 ≤ z < 0.55 title-card (serif title + mono path/status) ·
   z < 0.18 glyph (hairline square + pixel-scale label). CSS class swap on `.card`,
@@ -82,6 +89,15 @@ File: `board.canvas` (JSON Canvas 1.0 — jsoncanvas.org). Be liberal on read.
   from:nodeId|null, src:url-or-path|null, x0,y0}` — `x0/y0` = world coords at birth, nodes only.
   A **thread entry** carries the same object as a plain TOP-LEVEL `prov` field (it has no
   `x-powerset` block to nest one in). Written at creation, backfilled on load, preserved verbatim.
+- **A restore point** is `"x-powerset".arrangements:[{key,verb,at,spots:[{id,x,y}]}]`
+  (wave-2 §3) — where a set of cards stood immediately before an arrangement verb moved them.
+  `key` is the scope (`board` · `thread:<id>` · `run:<id>|<id>…`), `verb` is `pull|comb|relax`.
+  Wave 1 kept this in a module-local Map, so a reload mid-pull made the arc permanent; it is
+  board state now, so un-arranging survives a reload. The key is omitted on a board nobody has
+  arranged. One entry per scope, first-writer-wins (a comb on top of a pull still puts back to
+  where the HAND left the cards), and a wider verb retires the narrower points it wholly
+  subsumes. Spots naming a card the board no longer has are pruned on load, and an entry left
+  with nothing to restore is dropped.
 - **A thread entry** is `{id,name,nodeIds,pinned?,broken?,prov}` (wave-2 §1). `pinned: true`
   freezes membership; `broken: {at, missing:[{id,index,title}]}` records cards an edit took away.
   Both are written ONLY when present, so an ordinary thread's entry is the wave-1 shape.
@@ -95,6 +111,11 @@ a prototype.
 - Left-drag on paper = pan (and marquee later — alt-drag reserved for marquee).
   Left-drag on card = move card. Wheel = pan; ctrl/cmd+wheel & pinch = zoom-at-cursor.
   Double-click paper = zoom-to-fit. `1`..`3` set topology mode; `f` zoom-to-fit.
+- Entropy verbs (wave-2 §3): `t` pull the selected thread taut — or, whenever a restore point
+  is held for the current scope, put every card back where the hand left it. `b` comb the
+  selected thread. `r` relax: scope FOLLOWS THE SELECTION (a thread if one is grabbed, the
+  whole cloth if not); `shift-r` (or shift-click `relax`) forces the whole cloth and lets go
+  of the thread first, so the scope acted on is always the scope the chrome is showing.
 - Spawn placement: new card at source's right edge + 60px, vertically staggered to avoid
   overlap with siblings; **spawn = bloom near source**, no drag-to-place ceremony (brief Q3
   gets answered by feel-testing this default).
@@ -739,3 +760,80 @@ vocabulary and one new verb on the fiber pill.
   quotes, consistent with the thread handoff it sits beside); any prov UI (§8.3 stays out of
   wave 2); and the ideation §9.3 "skein" reading of glyph-as-set — the set is an
   implementation fact here, not a surfaced concept.
+
+**2026-08-06 — wave-2 stage 3 (entropy verbs: relax + comb + a persistent restore point).**
+
+- **New module `src/arrange.ts`** (not in the pinned module list). The three verbs are pure
+  functions of the nodes handed in — no DOM, no board, no animation — so the brief's actual
+  question ("does comb ever move a card outside the thread?") is answered by construction and
+  checkable without a browser. `threads.ts` lost its private `tautSpots`, `TAUT_GAP`, `SAG_*`.
+- **Wave-1's pull-taut promise held.** `tautSpots` only ever named ids from the array it was
+  given, and the caller only ever gave it `selection.nodeIds`. Verified rather than believed
+  (harness + a live comb with two non-thread cards watched: neither moved by a pixel).
+- **RELAX is a restore, never an invention.** Targets come only from `prov.x0/y0`; a card
+  whose birthplace the board never recorded is left where it is and COUNTED, and the status
+  line says which of the three reasons "nothing happened" applies — including the one that
+  matters for old boards: *"the cloth predates provenance: every birthplace was backfilled on
+  first open, so this IS the as-wandered arrangement"*. A wave-1 board relaxes to nothing, and
+  says so. Inventing a tidy layout there is exactly the auto-sort this rung exists to avoid.
+- **COMB is minimal-motion, not a second pull.** It fits the run's own least-squares axis
+  (not the root→tip heading pull uses — a run whose ends happen to sit close together still
+  has a direction), drops each card's perpendicular offset, then walks the run in trail order
+  pushing a card forward ONLY where it would crowd its predecessor, and re-centres on the
+  centroid so combing twice does not walk the thread across the cloth. It therefore keeps the
+  walk's RHYTHM — a long pause between two cards stays a long gap — where pull discards it
+  on purpose. Comb is idempotent; a straight, well-spaced thread reports *"already combed"*
+  and moves nothing.
+- **The restore point moved into the board** (`x-powerset.arrangements`), which is what makes
+  wave 1's known issue go away: pull, reload, and the toolbar still says `put back`. Design
+  decisions inside it:
+  - **One entry per scope, first-writer-wins.** A comb applied on top of a pull does not
+    redefine the restore point as "before the comb", or two verbs in a row would become
+    unreversible one verb at a time.
+  - **A wider verb retires the narrower points it wholly subsumes.** Found live, not
+    reasoned: pull a thread, then relax the whole cloth, and the thread still offered `put
+    back` — to positions from before a move that had since happened to every one of its
+    cards. Overlap alone does not retire (two threads sharing a card is ordinary); only total
+    containment makes the older point meaningless.
+  - **Relax takes a restore point too**, so the deeper undo is itself undoable. Nothing here
+    is a one-way door, which is the §7 meta-rule applied to layout.
+  - `removeNode` prunes a card out of every entry and drops one left empty; `load` prunes
+    spots naming cards the file no longer has (the same rule edges already follow).
+- **`board.moveNodes(spots)`** — new, and load-bearing for a whole-cloth relax: 30 cards
+  animating would otherwise emit 30 changes a frame and make every layer downstream redraw 30
+  times for one visible motion. `edges.ts`, `fibers.ts` and `glyphs.ts` also learned to
+  early-return on the new `arrange` change kind (a restore point moves nothing).
+- **The ease is decoration; the move is not.** A throttled or hidden tab starves
+  `requestAnimationFrame`, and the restore point is spent the moment the verb runs — so an
+  animation that never gets a frame would consume the undo without moving anything. Observed
+  in the Browser pane, fixed with a `setTimeout` net that lands the cards on their targets if
+  the ease has not finished by `PULL_MS + 250`.
+- **Chrome: a new `arrange` toolbar group** holding `pull taut` / `comb` / `relax`, and the
+  pull button now carries its own inverse (`put back`, inverted) rather than the wave-1 label
+  `relax` — which the entropy verb has now taken, and which meant something different.
+  `comb` is disabled without a selection; `relax` never is, because without a selection it
+  means the whole cloth. `ui.setActiveThread` lost its `pulled` argument to a separate
+  `setArrange(restore, hasSelection)`, since a whole-board relax changes what may be offered
+  without changing what is selected (`threads.ts` gained `onArrange` for the same reason).
+- **Verified.** `npm run build` clean; an off-DOM harness (**56 assertions**, all pass) over
+  `Out/p0-agent-thread/board.canvas`, `Out/sample-board.canvas` and synthetic boards: both
+  real boards load unchanged and gain no `arrangements` key, the codec is still a fixpoint
+  with restore points present, an unknown verb narrows to `pull`, an entry's unknown keys ride
+  through, dead spots are pruned, and *pull → serialize → reload → put back* lands the cards
+  back on their pre-pull coordinates. Then in-browser on a tangled 6-card board with a named
+  4-card thread: whole-cloth relax restored the as-wandered staircase; a full page reload
+  still offered `put back` and un-relaxing worked (the wave-1 bug, gone); comb straightened
+  the thread and left the two non-thread cards untouched to the pixel; un-comb restored the
+  tangle exactly; thread-scoped relax moved only its four; `shift-r` let go of the thread and
+  relaxed the cloth; pull-taut's arc and comb's line were visibly different verbs; and
+  relaxing an already-relaxed cloth said so instead of doing nothing quietly. Zero console
+  errors; the pane's board was restored to its original seed and no `window.__loom`-style
+  source hook was ever added.
+- **Not done, deliberately:** ideation §7.5 rung (c), arrangement memory — named layout
+  snapshots you can return to. The restore points are one unnamed snapshot per scope, which is
+  the machinery rung (c) needs but not the surface; naming them is a feature with a UI, and
+  the brief scoped rungs (a)–(b). Also not done: any collision avoidance against non-thread
+  cards (comb can now leave a thread lying across a card it does not own — that is the price
+  of "never moves what you did not select", and the session should say whether it hurts); an
+  animation for relax that differs from pull's (one ease, one reading of "these move as one");
+  and any garbage collection of restore points by age.
