@@ -427,6 +427,15 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
     const existing = currentThread();
     if (!name) {
       if (existing) {
+        // THE UNDO FOLLOWS THE NAME. The scope key of these cards is about to
+        // change (`thread:<id>` → `run:<ids>`), and a restore point left under
+        // the old key is unreachable for ever — `removeThread` would then drop
+        // it, and the pre-pull hand positions with it. Re-key first, delete
+        // second.
+        board.rekeyArrangement(
+          scopeKey(existing.id, selection.nodeIds),
+          scopeKey(null, selection.nodeIds),
+        );
         board.removeThread(existing.id);
         setSelection({ ...selection, threadId: null });
         status("thread un-named — it is a run again, not an object");
@@ -449,6 +458,12 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
         from: selection.nodeIds[0] ?? null,
         src: null,
       });
+      // and the run's undo comes with it: pull an unnamed run taut, then name
+      // it, and `t` must still put the cards back where the hand left them
+      board.rekeyArrangement(
+        scopeKey(null, selection.nodeIds),
+        scopeKey(thread.id, selection.nodeIds),
+      );
       setSelection({ ...selection, threadId: thread.id });
       status(`thread "${name}" kept — ${selection.nodeIds.length} cards`);
     }
@@ -932,18 +947,20 @@ export function createThreadLayer(options: ThreadLayerOptions): ThreadLayer {
       setSelection(null);
       return;
     }
-    // the selected thread grew (or was edited) under the selection: re-select it
-    // so the invariant holds — a named thread's selection IS its membership
+    // The selected thread grew (or was edited) under the selection: re-select it
+    // so the invariant holds — a named thread's selection IS its membership.
+    // ONE comparison, against the membership already filtered to what is on the
+    // board. Two (re-select from the model, then drop dead ids from the result)
+    // is a loop: a membership naming a card that is not here would be restored
+    // by the first and stripped by the second, flipping the selection — and
+    // with it every redraw downstream — on every single board change.
     const thread = currentThread();
-    if (thread && !sameOrder(thread.nodeIds, selection.nodeIds)) {
-      if (thread.nodeIds.length === 0) setSelection(null);
-      else selectRun(thread.nodeIds, thread.id);
-      return;
-    }
-    // a placement can vanish under a selection (unpin); drop it from the run
-    const alive = selection.nodeIds.filter((id) => board.node(id) !== undefined);
-    if (alive.length !== selection.nodeIds.length) {
-      selectRun(alive, selection.threadId);
+    const want = (thread ? thread.nodeIds : selection.nodeIds).filter(
+      (id) => board.node(id) !== undefined,
+    );
+    if (!sameOrder(want, selection.nodeIds)) {
+      if (want.length === 0) setSelection(null);
+      else selectRun(want, selection.threadId);
       return;
     }
     if (change.kind === "graph" || change.kind === "content") paintCards();

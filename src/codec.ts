@@ -54,7 +54,21 @@ type Json = Record<string, unknown>;
 // live geometry and only synthesizes advisory ones for foreign readers, so a
 // file that states them keeps its own.
 
-const NODE_BASE_KEYS = ["id", "type", "x", "y", "width", "height", "x-powerset"];
+/**
+ * The brief's own wire key (§0), and the one its Appendix tells the next agent
+ * experiment to write (`powerset:prov.by = "agent"`). This build keeps prov
+ * INSIDE `x-powerset` — one namespace per object, the wave-1 reality, disclosed
+ * in ARCHITECTURE.md's deviation log — but it must still READ the literal form,
+ * or a file written exactly as the brief specifies loads as human · wander with
+ * its real provenance sitting inert in the preserved leftovers. So: a top-level
+ * `powerset:prov` is a first-class source on read, and it is CONSUMED (not
+ * replayed as a foreign key) so the object cannot end up carrying two copies
+ * that drift — the same migration `readThreads` already performs on a prov
+ * block the P0 agent nested inside a thread's `x-powerset`.
+ */
+const WIRE_PROV = "powerset:prov";
+
+const NODE_BASE_KEYS = ["id", "type", "x", "y", "width", "height", "x-powerset", WIRE_PROV];
 const NODE_EXT_KEYS = new Set([
   "kind",
   "title",
@@ -64,7 +78,7 @@ const NODE_EXT_KEYS = new Set([
   "viewAnchor",
   "prov",
 ]);
-const EDGE_BASE_KEYS = new Set(["id", "fromNode", "toNode", "label", "x-powerset"]);
+const EDGE_BASE_KEYS = new Set(["id", "fromNode", "toNode", "label", "x-powerset", WIRE_PROV]);
 const EDGE_EXT_KEYS = new Set(["kind", "prov"]);
 const THREAD_KEYS = new Set(["id", "name", "nodeIds", "pinned", "broken", "prov"]);
 const MARK_KEYS = new Set(["id", "nodeId", "quote", "kind", "noteNodeId"]);
@@ -370,7 +384,7 @@ function readNode(raw: unknown): LoomNode | null {
     status: "idle",
     // a card with no recorded birthplace was born where it stands — the only
     // honest guess, and the one relax needs to have something to restore to
-    prov: readProv(ext["prov"], { x0: x, y0: y }),
+    prov: readProv(ext["prov"] ?? raw[WIRE_PROV], { x0: x, y0: y }),
   };
   const text = str(raw["text"]);
   if (kind === "note" && text !== undefined) node.text = text;
@@ -399,7 +413,7 @@ function readEdge(raw: unknown): LoomEdge | null {
     from,
     to,
     kind,
-    prov: readProv(ext["prov"], { from }),
+    prov: readProv(ext["prov"] ?? raw[WIRE_PROV], { from }),
   };
   const label = str(raw["label"]);
   if (label !== undefined) edge.label = label;
@@ -428,14 +442,16 @@ function readThreads(raw: unknown): Thread[] {
       id,
       name: str(item["name"]) ?? "thread",
       nodeIds,
-      prov: readProv(item["prov"] ?? nestedProv, { from: nodeIds[0] ?? null }),
+      // top-level `prov` (this build's thread shape, P0 gap #1) · the brief's
+      // literal wire key · the block the P0 agent nested — in that order
+      prov: readProv(item["prov"] ?? item[WIRE_PROV] ?? nestedProv, { from: nodeIds[0] ?? null }),
     };
     // a pin is a fact about the thread, so a hand-edit can set one; anything
     // other than a literal `true` is read as unpinned (and then not rewritten)
     if (item["pinned"] === true) thread.pinned = true;
     const broke = readBreak(item["broken"]);
     if (broke) thread.broken = broke;
-    const top = pickForeign(item, new Set([...THREAD_KEYS, "x-powerset"]));
+    const top = pickForeign(item, new Set([...THREAD_KEYS, "x-powerset", WIRE_PROV]));
     const leftover = nested && Object.keys(nested).length > 0 ? nested : undefined;
     if (top || leftover) {
       thread.foreign = { ...(top ? { top } : {}), ...(leftover ? { ext: leftover } : {}) };

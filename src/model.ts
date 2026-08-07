@@ -372,6 +372,18 @@ export interface Arrangement {
   foreign?: Record<string, unknown>;
 }
 
+/**
+ * The arrangement scope key of a NAMED thread. `arrange.scopeKey` composes the
+ * whole key space (`board` · this · `run:<ids>`) and is the function every
+ * caller should use; the thread form lives here because the board itself has to
+ * name it — a thread that is deleted, or is born out of a run that already
+ * holds a restore point, has to move or retire that point, or the stash keeps
+ * entries nothing can ever reach again.
+ */
+export function threadScope(threadId: string): string {
+  return `thread:${threadId}`;
+}
+
 export interface BoardSnapshot {
   nodes: LoomNode[];
   edges: LoomEdge[];
@@ -530,6 +542,11 @@ export interface Board {
   arrangement(key: string): Arrangement | undefined;
   /** take a restore point; an existing one for this scope is NOT overwritten */
   setArrangement(entry: Arrangement): void;
+  /**
+   * Move a restore point to another scope key — what naming or un-naming a run
+   * does to it. The same cards under a new key, never a second copy.
+   */
+  rekeyArrangement(from: string, to: string): void;
   /** spend or discard a restore point */
   clearArrangement(key: string): void;
 
@@ -709,11 +726,26 @@ function adjacentIn(ids: readonly string[], from: string, to: string): boolean {
  * note into an agent's thread merely because the walk passed through it), and
  * the anchor stays visible as what it is: the card the reply hangs from.
  *
- * Tier 2 — a BROKEN thread's survivors appear in the run in order, with gaps.
+ * Tier 2 — a BROKEN thread, matched in EITHER direction:
+ *
+ *   - the survivors appear in the run in order, with gaps (a run that still
+ *     spans the hole — a manual bridge, a re-linked trail);
+ *   - or the run is a FRAGMENT of the survivors: every card of the run appears
+ *     in the membership, in order. This is the ordinary case and the one the
+ *     first cut missed. Deleting a card mid-thread takes BOTH of its trail
+ *     edges with it, so the walk can no longer reach across the hole: a
+ *     5-card thread A→B→C→D→E that loses C leaves two runs, [A,B] and [D,E],
+ *     and neither of them contains the 4-card membership. Grabbing either one
+ *     printed "thread unnamed — 2 cards", which is exactly the wave-1 wording
+ *     §1's hard constraint was written to eliminate. Now either fragment
+ *     brings the whole name back, marked broken, and selects all four
+ *     survivors with the hole visible (no edge spans it).
+ *
  * A card deleted mid-thread splits the membership; without this tier the name
  * would read "unnamed" again, which is precisely the silent detach the brief
- * forbids. The name comes back marked broken instead, and the missing step
- * draws as a hole in the weave (no edge spans the gap).
+ * forbids. Only a thread that has RECORDED a break may claim a fragment — an
+ * intact thread claiming a two-card piece of itself would annex every run that
+ * passes through it.
  *
  * Ties: an exact match first, then a thread that HOLDS the clicked edge, then
  * the longer claim. A one-card thread can only match a one-card run — it would
@@ -729,10 +761,15 @@ export function resolveThreadForRun(
   for (const t of threads) {
     if (t.nodeIds.length < 2 && t.nodeIds.length !== run.length) continue;
     const contiguous = blockStart(run, t.nodeIds) >= 0;
-    const scattered = !contiguous && t.broken !== undefined && isSubsequence(run, t.nodeIds);
-    if (!contiguous && !scattered) continue;
+    const broke = t.broken !== undefined;
+    const scattered = !contiguous && broke && isSubsequence(run, t.nodeIds);
+    // the run is a surviving PIECE of a broken thread (both ends of the hole
+    // lost their edges, so no walk can produce the whole membership again)
+    const fragment =
+      !contiguous && !scattered && broke && run.length >= 2 && isSubsequence(t.nodeIds, run);
+    if (!contiguous && !scattered && !fragment) continue;
     const score =
-      (contiguous ? 4000 : 0) +
+      (contiguous ? 4000 : scattered ? 800 : 400) +
       (sameOrder(t.nodeIds, run) ? 2000 : 0) +
       (edge && adjacentIn(t.nodeIds, edge.from, edge.to) ? 1000 : 0) +
       t.nodeIds.length;
@@ -1025,10 +1062,21 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
         }
       }
       if (heir) {
-        // a restore point still names the placements that are left
-        arrangements = arrangements
-          .map((a) => ({ ...a, spots: a.spots.filter((s) => s.id !== id) }))
-          .filter((a) => a.spots.length > 0);
+        // A RESTORE POINT IS RE-POINTED TOO, not shrunk. The card did not leave
+        // the board — the heir is now the placement everything else names, and
+        // a spot filtered out here would silently make "put back" move one card
+        // fewer than the thread it was taken for (observed: pull a thread taut,
+        // split a facet of one of its cards, unpin the root). The heir inherits
+        // the old root's remembered position only when the entry does not
+        // already hold one of its own; a restore point never names a placement
+        // twice.
+        arrangements = arrangements.map((a) => {
+          if (!a.spots.some((s) => s.id === id)) return a;
+          const spots = a.spots.some((s) => s.id === heir)
+            ? a.spots.filter((s) => s.id !== id)
+            : a.spots.map((s) => (s.id === id ? { ...s, id: heir } : s));
+          return { ...a, spots };
+        });
         emit({ kind: "graph", nodeIds: [id, heir], edgeIds: dropped });
         return;
       }
@@ -1273,7 +1321,17 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       const next = threads.filter((t) => t.id !== id);
       if (next.length === threads.length) return;
       threads = next;
+      // the thread's restore point goes with the thread. Left behind, its key
+      // (`thread:<id>`) names an object that no longer exists: nothing can ever
+      // reach it again, and it would still round-trip into the saved file as a
+      // put-back that can never be pressed. Un-naming re-keys it FIRST (see
+      // threads.commitName), so the run keeps its own undo.
+      const scope = threadScope(id);
+      const kept = arrangements.filter((a) => a.key !== scope);
+      const lost = kept.length !== arrangements.length;
+      arrangements = kept;
       emit({ kind: "threads" });
+      if (lost) emit({ kind: "arrange" });
     },
 
     arrangements: () => arrangements.map(adoptArrangement),
@@ -1299,6 +1357,19 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       const covered = new Set(entry.spots.map((s) => s.id));
       arrangements = arrangements.filter((a) => !a.spots.every((s) => covered.has(s.id)));
       arrangements = [...arrangements, adoptArrangement(entry)];
+      emit({ kind: "arrange" });
+    },
+    rekeyArrangement(from, to) {
+      if (from === to) return;
+      const hit = arrangements.find((a) => a.key === from);
+      if (!hit) return;
+      // first-writer-wins holds across a re-key too: if the destination scope
+      // already holds a point, it is the older answer to "where were these
+      // cards before the machine touched them" and it stays. The source entry
+      // still goes — its key is about to become unreachable either way.
+      const taken = arrangements.some((a) => a.key === to);
+      const rest = arrangements.filter((a) => a.key !== from);
+      arrangements = taken ? rest : [...rest, { ...adoptArrangement(hit), key: to }];
       emit({ kind: "arrange" });
     },
     clearArrangement(key) {
@@ -1380,9 +1451,30 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       }
       // everything that binds to the CARD is read as the card: a file that names
       // a facet in a thread, a mark or a stamp meant the article, not the window
-      threads = (snapshot.threads ?? [])
-        .map(adoptThread)
-        .map((t) => ({ ...t, nodeIds: dedupe(t.nodeIds.map(rootId)) }));
+      threads = (snapshot.threads ?? []).map(adoptThread).map((t) => {
+        const named = dedupe(t.nodeIds.map(rootId));
+        const kept = named.filter((n) => nodes.has(n));
+        if (kept.length === named.length) return { ...t, nodeIds: named };
+        // A MEMBERSHIP NAMING A CARD THAT IS NOT HERE IS A BREAK, not a typo to
+        // be swallowed. Edges and arrangements are already pruned against the
+        // node set on the way in; threads were not, so a file (an agent's
+        // reply, a hand edit, a card deleted in another tool) could load a
+        // membership half of which does not exist — every layer downstream then
+        // disagreed about what the thread held, and the selection oscillated
+        // between the two answers on every board change. Prune, and record what
+        // was pruned: wave-2 §1 says a name never detaches silently, and that
+        // binds the load path exactly as it binds `removeNode`. `at` stays as
+        // the file left it — the file never said when this happened, and
+        // inventing "now" would date the break to the moment it was noticed.
+        const missing: BrokenLink[] = named
+          .map((id, index) => ({ id, index, title: "" }))
+          .filter((m) => !nodes.has(m.id));
+        return {
+          ...t,
+          nodeIds: kept,
+          broken: { at: t.broken?.at ?? null, missing: [...(t.broken?.missing ?? []), ...missing] },
+        };
+      });
       marks = (snapshot.marks ?? []).map((m) => ({
         ...m,
         nodeId: rootId(m.nodeId),

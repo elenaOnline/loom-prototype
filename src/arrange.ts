@@ -31,6 +31,7 @@
 // cheapest possible way to learn it is to ship both and watch which is pressed.
 
 import type { LoomNode } from "./model";
+import { threadScope } from "./model";
 
 /** a world position; the id lives in the Map key */
 export interface Spot {
@@ -58,9 +59,15 @@ export const SCOPE_BOARD = "board";
  * (wave-2 §1), so a membership key would change mid-pull and strand the stash —
  * the exact irreversibility wave 1 logged. An unnamed run has nothing but its
  * membership to be keyed by, and accepts that.
+ *
+ * The two forms are not interchangeable, so the MOMENT of naming (and of
+ * un-naming) has to carry the restore point across — `board.rekeyArrangement`,
+ * called from `threads.commitName`. Without it, naming a run you had already
+ * pulled orphaned its undo and the next pull retired it: the hand positions
+ * were gone for good.
  */
 export function scopeKey(threadId: string | null, nodeIds: readonly string[]): string {
-  return threadId ? `thread:${threadId}` : `run:${nodeIds.join("|")}`;
+  return threadId ? threadScope(threadId) : `run:${nodeIds.join("|")}`;
 }
 
 // -------------------------------------------------------------- placement ----

@@ -485,10 +485,20 @@ export function createGlyphLayer(options: GlyphLayerOptions): GlyphLayer {
     const hit = e.target.closest<HTMLElement>(".glyph-atom, .glyph-mark");
     const glyph = hit?.dataset["glyph"];
     if (!glyph) return;
+    const onMark = hit.classList.contains("glyph-mark");
     // a click that ENDED a text drag is somebody choosing words, not grabbing a
     // glyph — the fiber pill is about to rise on that selection, leave it alone
     const live = window.getSelection();
-    if (hit.classList.contains("glyph-mark") && live !== null && !live.isCollapsed) return;
+    if (onMark && live !== null && !live.isCollapsed) return;
+    // THE LINK ALWAYS WINS. `wrapQuote` wraps per text node, so a stamp over a
+    // sentence containing an <a> puts a `.glyph-mark` INSIDE the anchor — and
+    // this handler is capture-phase on the viewport, an ancestor of the card
+    // layer, so the `stopPropagation()` below would eat the click before
+    // `trail.onClickCapture` ever saw it. That is the prototype's prime loop
+    // (follow a link, spawn a card) dying on any passage that was stamped.
+    // A glyph is reachable from its head atom, from the toolbar chip and from
+    // any of its unlinked characters; the spawn is reachable from nowhere else.
+    if (onMark && e.target.closest("a")) return;
     e.preventDefault();
     e.stopPropagation();
     if (selected === glyph) clear();

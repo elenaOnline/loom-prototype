@@ -534,11 +534,19 @@ No new module and no new UI: `model.ts` gains the vocabulary, `codec.ts` gains t
 and the four creation sites (`trail.ts`, `fibers.ts`, `cards.ts`, `threads.ts`) each say one
 honest thing about how the object they make came to be.
 
-- **`prov` lives INSIDE `x-powerset`, not beside it.** The wave-2 brief writes the block as
-  `"powerset:prov"`, but wave 1 already shipped the `x-powerset` namespace and the P0 agent
-  already wrote into it. A second namespace on the same object would be two conventions to
-  explain to the next agent, so the shape is `"x-powerset": { kind, title, ref, prov: {…} }` on
-  nodes and `"x-powerset": { kind, prov: {…} }` on edges.
+- **`prov` lives INSIDE `x-powerset`, not beside it — but the brief's literal key is READ.**
+  The wave-2 brief writes the block as `"powerset:prov"`, but wave 1 already shipped the
+  `x-powerset` namespace and the P0 agent already wrote into it. A second namespace on the same
+  object would be two conventions to explain to the next agent, so what this build *writes* is
+  `"x-powerset": { kind, title, ref, prov: {…} }` on nodes and `"x-powerset": { kind, prov: {…} }`
+  on edges. A deviation on the write side must not become a deviation on the read side, though:
+  a top-level `"powerset:prov"` — the shape the brief specifies, and the shape its Appendix tells
+  the next agent experiment to write (`powerset:prov.by = "agent"`) — is read as first-class
+  provenance by `readNode`, `readEdge` and `readThreads`, and is **consumed** rather than
+  replayed as a foreign key, so the object never carries two copies that can drift. Precedence:
+  `x-powerset.prov` (or a thread's top-level `prov`) · `powerset:prov` · the P0 agent's nested
+  block. Fixed 2026-08-06 in the wave-2 fix pass; before it, a file written exactly as the brief
+  specifies loaded as `human · wander` with its real provenance inert in the leftovers.
 - **A thread entry carries `prov` at its TOP LEVEL** — this is P0 convention gap #1, closed. A
   thread has no `x-powerset` block of its own to nest anything in; the P0 agent, told "inside
   every x-powerset block you write", reasonably invented one. `readThreads` **migrates** that
@@ -986,3 +994,56 @@ per-placement field (`viewAnchor`), and the small chrome the ledger asked for.
   its own outline); scroll-position memory finer than a heading (there is no honest way to keep
   a pixel offset across a re-fetch); and edges drawn per-facet, which is the decision this
   stage was asked to make by building it.
+
+**2026-08-06 — wave-2 fix pass (six defects from the parallel review).**
+
+No new feature and no new key on the wire; six rules the earlier stages stated but did not
+hold. Each is a rule, not a patch, so it is written down as one:
+
+- **A broken thread is resolvable from EITHER piece of itself** (`model.resolveThreadForRun`).
+  Tier 2 only matched a run that still *spanned* the hole — but a card deleted mid-thread takes
+  both of its trail edges, so no walk can ever produce such a run. A→B→C→D→E losing C left two
+  runs, `[A,B]` and `[D,E]`, and grabbing either printed *"thread unnamed — 2 cards"*: the exact
+  wave-1 wording §1's hard constraint exists to eliminate. A run that is a **fragment** of a
+  broken thread's membership (every card of the run, in order, inside the membership) now
+  resolves to the name, selects all the survivors, and says it is broken. Only a thread with a
+  recorded break may claim a fragment — an intact thread claiming a two-card piece of itself
+  would annex every run passing through it. Tier bases are now `4000` contiguous · `800`
+  scattered · `400` fragment.
+- **A membership naming a card that is not on the board is a BREAK, recorded at load**
+  (`model.load`). Edges and arrangements were already pruned against the node set; threads were
+  not, so a file could load `nodeIds: ["a","ghost"]` — and `threads.ts` then flipped the
+  selection between the model's answer and the alive-filtered one on *every* board change,
+  redrawing the edge layer, the cards and the plate each time. Pruned now, and the loss goes
+  into `broken.missing` with `at` left as the file had it (`null` if it never said — dating the
+  break to the moment it was noticed would be a lie). The oscillation is *also* closed at the
+  source: `threads.ts`'s change handler makes **one** comparison, against the membership already
+  filtered to what exists.
+- **The pull-taut undo follows the name across a rename of its scope** (`board.rekeyArrangement`,
+  called from `threads.commitName`). `scopeKey` switches from `run:<ids>` to `thread:<id>` the
+  instant a run is named, and the restore point was left under a key nothing could reach — the
+  next pull then retired it (subset rule) and the pre-pull hand positions were gone for good.
+  Naming re-keys forward, un-naming re-keys back *before* `removeThread`, and `removeThread`
+  itself now drops any `thread:<id>` point it would otherwise strand in the saved file.
+  First-writer-wins holds across a re-key: an existing point at the destination stays.
+- **A promoted heir inherits the old root's restore spot** (`model.removeNode`). The heir branch
+  re-pointed edges, marks, stamps and thread membership but *filtered* arrangement spots, so
+  unpinning a root placement silently shrank a live restore point and "put back" moved one card
+  fewer without saying so. It is re-pointed like everything else — unless the entry already
+  names the heir, in which case the heir's own spot wins and the root's goes (a restore point
+  never names a placement twice).
+- **The link always wins over a glyph stamp** (`glyphs.onClick`). `wrapQuote` wraps per text
+  node, so stamping a sentence containing an `<a>` puts a `.glyph-mark` *inside* the anchor;
+  the glyph handler is capture-phase on `#viewport`, an ancestor of `#cards`, so its
+  `stopPropagation()` ate the click before `trail.onClickCapture` ever saw it — a stamped
+  passage killed the prototype's prime loop, and the two mark species diverged (fiber marks
+  install no handler and stayed clickable). A click on a `.glyph-mark` inside an `<a>` is now
+  passed through: the glyph is reachable from its head atom, the toolbar chip and any unlinked
+  character of the stamp; the spawn is reachable from nowhere else.
+- **Verified.** `npm run build` clean; an off-DOM harness over the six repros (each reproduced
+  *before* the fix, then re-run after), plus `Out/p0-agent-thread/board.canvas` (34 nodes, 3
+  threads) and `examples/sample-board.canvas` still loading with every membership live and
+  `load(save(x)) === save(x)`. Also checked: an intact thread still refuses a fragment, tier-1
+  containment still resolves the P0 anchor case, and a file carrying the brief's literal
+  `powerset:prov` on a node, an edge and a thread round-trips as a fixpoint with one copy of
+  its provenance.
