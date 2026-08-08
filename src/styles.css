@@ -889,7 +889,12 @@ body {
   background: var(--paper);
   font-family: var(--mono);
   font-size: 11px;
-  overflow: hidden;
+  /* wave 3: the strip WRAPS instead of clipping — a control that silently
+     vanishes at narrower windows is chrome lying about what exists (observed:
+     the whole board group + beam gone at 1600px). The viewport insets read
+     offsetHeight, so a second row costs nothing downstream. */
+  flex-wrap: wrap;
+  row-gap: 0.2rem;
   z-index: 10;
 }
 
@@ -1147,3 +1152,68 @@ body {
   content: "composer — thread and fiber handoffs will be typed here";
   color: var(--s2);
 }
+
+/* =========================================================== wave 3 ======= */
+
+/* --- §2 live weaving: an agent's arrival is a DASHED plate that settles ---
+   State is geometry: dashed = "just arrived, still warm from the loom"; the
+   settle is a cut back to solid (weave.ts removes the class), not a fade. The
+   same dashing carries to whatever tier the arrival lands at. */
+.card.card-arriving { border-style: dashed; }
+.card.card-arriving .card-head { border-bottom-style: dashed; }
+.card.tier-glyph.card-arriving .card-head { border-style: dashed; }
+
+/* --- §3 the cloth beam: cold regions recede, deep regions compress ---
+   Cloth range only — reading surfaces are sacred, so the fiber and thread
+   bands never age. Selection beats age: a grabbed or pinged card is being
+   LOOKED AT, and the beam must not argue with the hand. */
+.card.tier-glyph[data-beam]:not([data-selected]):not([data-thread="in"]):not([data-glyphsel="in"]) .card-head {
+  border-color: var(--ghost);
+  background: var(--paper);
+}
+.card.tier-glyph[data-beam] .card-title { color: var(--ghost); }
+.card.tier-glyph[data-beam] .card-glyphs { color: var(--s2); }
+
+.card.tier-glyph[data-beam="deep"]:not([data-selected]):not([data-thread="in"]):not([data-glyphsel="in"]) .card-head {
+  width: calc(10px / var(--z, 1));
+  height: calc(10px / var(--z, 1));
+}
+.card.tier-glyph[data-beam="deep"] .card-head-stack { display: none; }
+.card.tier-glyph[data-beam="deep"] .card-glyphs { color: var(--ghost); }
+
+/* the slider is instrument chrome: a hairline track, an ink thumb, no accent */
+.tb-beam {
+  width: 88px;
+  height: 12px;
+  accent-color: var(--ink);
+  vertical-align: middle;
+}
+.tb-beam-readout {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--s2);
+  min-width: 30px;
+  display: inline-block;
+}
+
+/* --- §4 the hover lens (Litmaps gesture, owner request 2026-08-08) ---
+   Rest on a card at thread/cloth range: its neighbourhood comes forward and
+   the rest of the cloth falls back to semi-transparent. Disclosed deviation:
+   this is opacity, not the ghost-role recession the selection idioms use —
+   the A/B is deliberate (see FINDINGS). The fade-in is soft; the release is a
+   cut, because putting the room back is not an event. */
+#cards.hover-lens .card {
+  opacity: 0.22;
+  transition: opacity 140ms ease;
+}
+#cards.hover-lens .card[data-hover="in"] { opacity: 1; }
+
+#edges.hover-lens .edge,
+#edges.hover-lens .edge-atom,
+#edges.hover-lens .edge-fork { opacity: 0.15; }
+#edges.hover-lens [data-edge-id][data-hover="in"] { opacity: 1; }
+
+/* the lens reveals what the caption policy suppressed: a lit neighbourhood is
+   being asked about, and an answer needs names (the Litmaps behaviour) */
+.card.tier-glyph[data-mute][data-hover="in"] .card-head-stack { display: block; }
+#cards.hover-lens .card.tier-glyph[data-beam="deep"][data-hover="in"] .card-head-stack { display: block; }

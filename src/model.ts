@@ -455,8 +455,18 @@ export interface NodeSpec {
 
 /** everything an edge needs beyond its two ends and its kind */
 export interface EdgeSpec {
+  /** only for a weave-merge: keep the id the file declared (ignored if taken) */
+  id?: string;
   label?: string;
   prov?: ProvSeed;
+  foreign?: Foreign;
+}
+
+/** what a weave-merge may carry into `addThread` beyond name + membership */
+export interface ThreadOpts {
+  /** keep the id the file declared (ignored if taken) */
+  id?: string;
+  pinned?: boolean;
   foreign?: Foreign;
 }
 
@@ -528,7 +538,7 @@ export interface Board {
   removeGlyph(id: string): void;
 
   /** name a run of nodes — the moment a trail becomes an object you can keep */
-  addThread(name: string, nodeIds: string[], prov?: ProvSeed): Thread;
+  addThread(name: string, nodeIds: string[], prov?: ProvSeed, opts?: ThreadOpts): Thread;
   renameThread(id: string, name: string): void;
   setThreadNodes(id: string, nodeIds: string[]): void;
   /** PIN: freeze membership — a pinned thread stops following its tip */
@@ -1095,26 +1105,54 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       arrangements = arrangements
         .map((a) => ({ ...a, spots: a.spots.filter((s) => s.id !== id) }))
         .filter((a) => a.spots.length > 0);
-      // A thread, though, does NOT quietly shrink. Wave-2 §1's hard constraint
-      // is that a name never detaches silently, and wave 1 broke it twice over:
-      // the membership shrank (so the name stopped matching the run) and a
-      // thread that lost its last card was deleted outright — a name vanishing
-      // with no trace is the loudest silent detach there is. Now the loss is
-      // RECORDED, the name is kept, and every surface draws the break.
+      // SPLIT-ON-DELETE (wave-3 §1, the owner's gate-1 amendment). Deleting a
+      // card out of an unpinned named thread no longer wounds it: the thread
+      // SPLITS. The tip-side segment keeps the name — the same reading of
+      // tip-tracking that growth uses: the name lives at the growing end — and
+      // the root-side remainder is born as a thread of its own, so no card
+      // that was in a named thread falls out of the named world. Deleting an
+      // END card just shortens the line (there is nothing to sever).
+      //
+      // Two cases still take the wave-2 break record instead of a split: a
+      // PINNED thread (a pin says "THIS is the thread"; a hole in a frozen
+      // snapshot is real news, not a fork) and a thread losing its LAST card
+      // (a name whose whole referent vanished must say so — wave-2 §1's "never
+      // detach silently" binds hardest exactly there).
+      const born: Thread[] = [];
       threads = threads.map((t) => {
         const index = t.nodeIds.indexOf(id);
         if (index < 0) return t;
-        const lost: BrokenLink = { id, index, title: gone.title };
-        return {
-          ...t,
-          nodeIds: t.nodeIds.filter((n) => n !== id),
-          broken: {
-            at: t.broken?.at ?? nowStamp(),
-            missing: [...(t.broken?.missing ?? []), lost],
-          },
-        };
+        const survivors = t.nodeIds.filter((n) => n !== id);
+        if (t.pinned || survivors.length === 0) {
+          const lost: BrokenLink = { id, index, title: gone.title };
+          return {
+            ...t,
+            nodeIds: survivors,
+            broken: {
+              at: t.broken?.at ?? nowStamp(),
+              missing: [...(t.broken?.missing ?? []), lost],
+            },
+          };
+        }
+        const before = t.nodeIds.slice(0, index);
+        const after = t.nodeIds.slice(index + 1);
+        const keep = after.length > 0 ? after : before;
+        const severed = after.length > 0 ? before : [];
+        if (severed.length > 0) {
+          born.push({
+            id: freshId("t"),
+            name: `${t.name} (cut)`,
+            nodeIds: severed,
+            // the cut segment is a capture forced by the delete; it keeps the
+            // author of the thread it was cut from
+            prov: makeProv({ by: t.prov.by, how: "capture", from: severed[0] ?? null }),
+          });
+        }
+        return { ...t, nodeIds: keep };
       });
+      if (born.length > 0) threads = [...threads, ...born];
       emit({ kind: "graph", nodeIds: [id], edgeIds: dropped });
+      if (born.length > 0) emit({ kind: "threads" });
     },
 
     moveNode(id, x, y) {
@@ -1188,7 +1226,7 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       const existing = board.findEdge(from, to, kind);
       if (existing) return existing;
       const edge: LoomEdge = {
-        id: freshId("e"),
+        id: spec?.id !== undefined && !edges.has(spec.id) ? spec.id : freshId("e"),
         from,
         to,
         kind,
@@ -1254,17 +1292,24 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       emit({ kind: "glyphs", nodeIds: placementIds(gone.nodeId) });
     },
 
-    addThread(name, nodeIds, prov) {
+    addThread(name, nodeIds, prov, opts) {
       // a thread is a line of CARDS; two facets of one article are one step
       const kept = dedupe(nodeIds.filter((id) => nodes.has(id)).map(rootId));
+      const id =
+        opts?.id !== undefined && !threads.some((t) => t.id === opts.id)
+          ? opts.id
+          : freshId("t");
       const thread: Thread = {
-        id: freshId("t"),
+        id,
         name,
         // a thread only ever holds placements that exist, in the order given
         nodeIds: kept,
         // a named thread is a run CAPTURED — from = the run's root
         prov: makeProv({ how: "capture", from: kept[0] ?? null, ...(prov ?? {}) }),
       };
+      if (opts?.pinned) thread.pinned = true;
+      const foreign = cloneForeign(opts?.foreign);
+      if (foreign) thread.foreign = foreign;
       threads = [...threads, thread];
       emit({ kind: "threads" });
       return thread;

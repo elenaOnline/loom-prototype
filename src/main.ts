@@ -17,6 +17,9 @@ import { createTierLayer } from "./tiers";
 import { createFiberLayer } from "./fibers";
 import { createGlyphLayer } from "./glyphs";
 import { createFacetLayer } from "./facets";
+import { createWeave } from "./weave";
+import { createBeam } from "./beam";
+import { createHoverLens } from "./hover";
 import { createUi } from "./ui";
 import { createWikiSource } from "./providers/wiki";
 import { createFolderSource, type FolderSource } from "./providers/folder";
@@ -132,6 +135,12 @@ const threads = createThreadLayer({
   },
 });
 
+// the cloth beam (wave-3 §3): arithmetic only; styles.css draws the recession
+const beam = createBeam({
+  board,
+  getCardEl: (id) => cards.element(id),
+});
+
 // ---- chrome -----------------------------------------------------------------
 
 const ui = createUi({
@@ -168,6 +177,7 @@ const ui = createUi({
   },
   onGlyphFile: () => glyphs.placeFile(),
   onCaptions: (on) => tiers.setCaptions(on),
+  onBeam: (days) => beam.setOffsetDays(days),
 });
 
 // after ui: the tier layer reports its altitude the moment it is built, and it
@@ -234,6 +244,38 @@ const autosave = createAutosave({
   board,
   host,
   onState: (state, detail) => ui.setSaveState(state, detail),
+});
+
+// LIVE WEAVING (wave-3 §2): while a file is bound, changes made to it outside
+// this window arrive on the board without a reload. `window.loomWeave.inject`
+// is the debug seam — the same merge, no file handle needed.
+const weave = createWeave({
+  board,
+  host,
+  getCardEl: (id) => cards.element(id),
+  hydrate: (id) => trail.hydrate(id),
+  onStatus: (text) => ui.status(text),
+});
+declare global {
+  interface Window {
+    loomWeave?: { inject(text: string): number };
+    /** harness seam (FINDINGS: drive the model, not synthetic clicks) */
+    loomBoard?: unknown;
+  }
+}
+window.loomWeave = weave;
+window.loomBoard = board;
+
+// the hover lens (wave-3 §4): Litmaps-style neighbourhood focus at thread and
+// cloth range; yields to the selection idioms, never runs while reading
+createHoverLens({
+  board,
+  viewport,
+  cardsContainer: cardsLayer,
+  edgesSvg,
+  getCardEl: (id) => cards.element(id),
+  getTier: () => tiers.tier(),
+  isSuppressed: () => threads.selection() !== null || glyphs.selected() !== null,
 });
 
 // ---- actions ----------------------------------------------------------------

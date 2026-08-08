@@ -57,6 +57,8 @@ export interface UiOptions {
   onGlyphFile: () => void;
   /** cloth-range caption policy — the reversible half of the §7.6 experiment */
   onCaptions: (on: boolean) => void;
+  /** the cloth beam (wave-3 §3): pretend the board is N days older; 0 = off */
+  onBeam: (days: number) => void;
 }
 
 const TOPOLOGY_HINT: Record<TopologyMode, string> = {
@@ -151,6 +153,27 @@ export function createUi(options: UiOptions): Ui {
     boardGroup.appendChild(loadButton);
   }
 
+  // THE BEAM (wave-3 §3): one debug slider, real units, honest label. At 0 the
+  // lens does not exist; anywhere else the readout says exactly how much older
+  // the board is pretending to be. It writes nothing and moves nothing.
+  const beamGroup = group("beam");
+  const beamSlider = document.createElement("input");
+  beamSlider.type = "range";
+  beamSlider.min = "0";
+  beamSlider.max = "90";
+  beamSlider.step = "1";
+  beamSlider.value = "0";
+  beamSlider.className = "tb-beam";
+  beamSlider.title =
+    "pretend the board is N days older — untouched regions recede at cloth range (a lens: writes nothing, moves nothing)";
+  const beamReadout = el("span", "tb-beam-readout", "now");
+  beamSlider.addEventListener("input", () => {
+    const days = Number(beamSlider.value);
+    beamReadout.textContent = days === 0 ? "now" : `+${days}d`;
+    options.onBeam(days);
+  });
+  beamGroup.append(beamSlider, beamReadout);
+
   const statusEl = el("span", "tb-status", "");
   const countEl = el("span", "tb-count", "");
   const saveEl = el("span", "tb-save", "…");
@@ -165,6 +188,7 @@ export function createUi(options: UiOptions): Ui {
     arrangeGroup,
     threadGroup,
     boardGroup,
+    beamGroup,
     statusEl,
     countEl,
     saveEl,

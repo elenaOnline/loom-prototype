@@ -41,6 +41,8 @@ export interface Host {
   bindFile(handle: FileSystemFileHandle | null): void;
   /** the bound file's name, if the board is writing to disk */
   boundFile(): string | null;
+  /** the bound handle itself — the weave polls it for changes made outside */
+  boundHandle(): FileSystemFileHandle | null;
 }
 
 interface FilePickerOptions {
@@ -141,6 +143,7 @@ export function createLocalStorageHost(composer: HTMLElement): Host {
     },
 
     boundFile: () => bound?.name ?? null,
+    boundHandle: () => bound,
   };
 }
 
