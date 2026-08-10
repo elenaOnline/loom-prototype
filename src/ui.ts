@@ -447,6 +447,12 @@ export function createUi(options: UiOptions): Ui {
     if (isTyping(e.target)) return;
     const index = ["1", "2", "3"].indexOf(e.key);
     if (index >= 0) {
+      // shift+digits belong to the seal species (seals.ts, by e.code). On
+      // layouts where the digit row NEEDS shift (AZERTY &é" …), shift+Digit1
+      // arrives here as e.key "1" with shiftKey set — without this bail one
+      // keystroke would both switch topology AND seal the card in hand. The
+      // species line on the keyboard is drawn on both sides or not at all.
+      if (e.shiftKey) return;
       const mode = TOPOLOGY_MODES[index];
       if (mode) {
         e.preventDefault();
