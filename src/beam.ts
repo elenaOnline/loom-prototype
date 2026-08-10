@@ -15,7 +15,7 @@
 //     ages with its NEWEST member, so activity anywhere on a thread keeps the
 //     whole thread warm, and one old card inside a live wander cannot pock the
 //     cloth. Edges of every kind bind a neighbourhood; so does membership in a
-//     named thread.
+//     named thread — and, since wave 4, so does sharing a seal.
 //   · cold regions RECEDE, they do not move. Positions never change — this is
 //     the anti-auto-sort promise: the beam compacts what exists and invents
 //     nothing. The drawing changes only at cloth range (reading surfaces are
@@ -81,6 +81,15 @@ export function createBeam(options: BeamOptions): Beam {
         if (a !== undefined && b !== undefined) union(a, b);
       }
     }
+    // a shared seal binds too (wave-4 §2): the whole reason the species exists
+    // is to keep distant cards warm together without an edge, and a lens that
+    // let one member of a live seal group go cold would un-say that
+    const sealHead = new Map<string, string>();
+    for (const s of board.seals()) {
+      const head = sealHead.get(s.glyph);
+      if (head === undefined) sealHead.set(s.glyph, s.nodeId);
+      else union(head, s.nodeId);
+    }
 
     // a region is as young as its newest member; every placement counts
     const youngest = new Map<string, number>();
@@ -106,10 +115,19 @@ export function createBeam(options: BeamOptions): Beam {
     }
   }
 
-  // ages only change when objects (or the pretence) do — never on camera moves
+  // ages only change when objects (or the pretence) do — never on camera
+  // moves. "seals" is a repaint kind because sealing rewires neighbourhoods
+  // exactly as threading does (the union pass above reads both).
   const unsubscribe = board.onChange((change) => {
     if (days <= 0) return;
-    if (change.kind === "graph" || change.kind === "reset" || change.kind === "threads") paint();
+    if (
+      change.kind === "graph" ||
+      change.kind === "reset" ||
+      change.kind === "threads" ||
+      change.kind === "seals"
+    ) {
+      paint();
+    }
   });
 
   return {

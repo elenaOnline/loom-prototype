@@ -16,6 +16,7 @@ import { createThreadLayer } from "./threads";
 import { createTierLayer } from "./tiers";
 import { createFiberLayer } from "./fibers";
 import { createGlyphLayer } from "./glyphs";
+import { createSealLayer } from "./seals";
 import { createFacetLayer } from "./facets";
 import { createWeave } from "./weave";
 import { createBeam } from "./beam";
@@ -130,9 +131,14 @@ const threads = createThreadLayer({
   onSelectionChange: (selection) => {
     ui.setActiveThread(selection?.threadId ?? null);
     ui.setArrange(threads.restoreVerb(), selection !== null);
-    // two species of thread, one cloth: a trail selection and a glyph selection
-    // both claim the same inversion, so only one of them may be lit at a time
-    if (selection) glyphs.clear();
+    // three species, one cloth: trail, stamp and seal selections all claim the
+    // same recede idiom, so only one of them may be lit at a time — each
+    // layer's onSelect clears the other two (clear() on an empty layer is a
+    // no-op, so the contract cannot recurse)
+    if (selection) {
+      glyphs.clear();
+      seals.clear();
+    }
   },
 });
 
@@ -177,6 +183,12 @@ const ui = createUi({
     else glyphs.select(glyph);
   },
   onGlyphFile: () => glyphs.placeFile(),
+  onSealPick: (seal) => {
+    // same contract as the glyph chips: the chip frames the membership; a
+    // seal mark on a card does not move the camera
+    if (seals.selected() === seal) seals.clear();
+    else seals.select(seal);
+  },
   onCaptions: (on) => tiers.setCaptions(on),
   onBeam: (days) => beam.setOffsetDays(days),
 });
@@ -260,7 +272,31 @@ const glyphs = createGlyphLayer({
   onStatus: (text) => ui.status(text),
   onSelect: (glyph) => {
     ui.setActiveGlyph(glyph);
-    if (glyph) threads.clear();
+    if (glyph) {
+      threads.clear();
+      seals.clear();
+    }
+  },
+});
+
+// the card-level species (wave-4 §2): decorates card HEADS only, so unlike
+// fibers and glyphs it has no body-ordering stake — it comes after glyphs so
+// its head row can take the outer seat on cards both species mark
+const seals = createSealLayer({
+  board,
+  camera,
+  viewport,
+  host,
+  getCardEls: (id) => cards.elements(id),
+  getInsets: insets,
+  getSelectedCardId: () => cards.selected(),
+  onStatus: (text) => ui.status(text),
+  onSelect: (seal) => {
+    ui.setActiveSeal(seal);
+    if (seal) {
+      threads.clear();
+      glyphs.clear();
+    }
   },
 });
 
@@ -299,7 +335,8 @@ createHoverLens({
   edgesSvg,
   getCardEl: (id) => cards.element(id),
   getTier: () => tiers.tier(),
-  isSuppressed: () => threads.selection() !== null || glyphs.selected() !== null,
+  isSuppressed: () =>
+    threads.selection() !== null || glyphs.selected() !== null || seals.selected() !== null,
 });
 
 // ---- actions ----------------------------------------------------------------
@@ -409,16 +446,20 @@ function seedIfEmpty(): void {
 /**
  * Handoff, widest grasp first: a selected GLYPH goes as its whole collection
  * (the glyph, then every quote with its ref — a thought and everywhere it
- * appeared); a selected thread goes as a whole line of thought (name + ordered
- * refs + marks); otherwise the one selected card.
+ * appeared); a selected SEAL goes as its membership (the seal, then every
+ * carrying card's ref); a selected thread goes as a whole line of thought
+ * (name + ordered refs + marks); otherwise the one selected card. Stamps →
+ * seals → threads → card: quotes are narrower than memberships are narrower
+ * than lines, and the narrowest live grasp wins.
  */
 function handOffSelection(): void {
   if (glyphs.handOff()) return;
+  if (seals.handOff()) return;
   if (threads.handOff()) return;
   const id = cards.selected();
   const node = id ? board.node(id) : undefined;
   if (!node) {
-    ui.status("select a thread, a glyph, or a card, then press c");
+    ui.status("select a thread, a glyph, a seal, or a card, then press c");
     return;
   }
   const target =

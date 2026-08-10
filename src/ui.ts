@@ -8,7 +8,7 @@
 
 import type { Camera } from "./camera";
 import type { ArrangeVerb, Board, ContentMode, TopologyMode } from "./model";
-import { GLYPH_PALETTE, TOPOLOGY_MODES, glyphChar } from "./model";
+import { GLYPH_PALETTE, SEAL_PALETTE, TOPOLOGY_MODES, glyphChar, sealChar } from "./model";
 import type { SaveState } from "./codec";
 
 export interface Ui {
@@ -25,6 +25,8 @@ export interface Ui {
   setArrange(restore: ArrangeVerb | null, hasSelection: boolean): void;
   /** which glyph is selected as a unit, if any */
   setActiveGlyph(glyph: string | null): void;
+  /** which seal is selected as a unit, if any (wave-4 §2) */
+  setActiveSeal(seal: string | null): void;
   /** the altitude word from tiers.ts — fiber · thread · cloth */
   setTier(word: string): void;
   refresh(): void;
@@ -53,6 +55,8 @@ export interface UiOptions {
   onThreadPick: (threadId: string) => void;
   /** light every place this glyph was stamped (wave-2 §2) */
   onGlyphPick: (glyph: string) => void;
+  /** light every card carrying this seal (wave-4 §2) */
+  onSealPick: (seal: string) => void;
   /** put the selected glyph's `marks/<name>.md` on the board */
   onGlyphFile: () => void;
   /** cloth-range caption policy — the reversible half of the §7.6 experiment */
@@ -105,6 +109,15 @@ export function createUi(options: UiOptions): Ui {
   const glyphFileButton = button("file…", () => options.onGlyphFile());
   glyphFileButton.title = "place the selected glyph's marks/<name>.md on the board";
   glyphGroup.append(glyphList, glyphFileButton);
+
+  // the card-level species (wave-4 §2) sits beside its sibling: same chip
+  // idiom — always-visible palette, ghost when unused, count when used,
+  // inversion when selected — but the count is CARDS, not passages, because a
+  // seal is a membership and a card can only join it once
+  const sealGroup = group("seal");
+  const sealList = document.createElement("span");
+  sealList.className = "tb-seals";
+  sealGroup.appendChild(sealList);
 
   // The entropy verbs (wave-2 §3) get their own group: `relax` acts on the
   // whole cloth when nothing is grabbed, so filing it under "thread" would have
@@ -185,6 +198,7 @@ export function createUi(options: UiOptions): Ui {
     modeGroup,
     topoGroup,
     glyphGroup,
+    sealGroup,
     arrangeGroup,
     threadGroup,
     boardGroup,
@@ -212,6 +226,7 @@ export function createUi(options: UiOptions): Ui {
   let restoreOffer: ArrangeVerb | null = null;
   let hasSelection = false;
   let activeGlyph: string | null = null;
+  let activeSeal: string | null = null;
 
   function refresh(): void {
     const topology = board.topologyMode();
@@ -228,10 +243,12 @@ export function createUi(options: UiOptions): Ui {
       count(board.threads().length, "thread"),
       count(board.marks().length, "mark"),
       count(board.glyphs().length, "stamp"),
+      count(board.seals().length, "seal"),
     ].join(" · ");
     refreshThreads();
     refreshArrange();
     refreshGlyphs();
+    refreshSeals();
   }
 
   /**
@@ -276,6 +293,47 @@ export function createUi(options: UiOptions): Ui {
   function setActiveGlyph(glyph: string | null): void {
     activeGlyph = glyph;
     refreshGlyphs();
+  }
+
+  /**
+   * The seal chips — refreshGlyphs's logic CLONED, deliberately not abstracted
+   * over: two species, two readouts (passages vs cards), and a shared generic
+   * would weld together exactly the pair the one-concept-one-name rule split.
+   * A seal a FILE brought that this palette does not offer gets a chip too.
+   */
+  function refreshSeals(): void {
+    const counts = new Map<string, number>();
+    for (const seal of board.seals()) {
+      counts.set(seal.glyph, board.cardsOfSeal(seal.glyph).length);
+    }
+    const names = SEAL_PALETTE.map((g) => g.name);
+    for (const name of counts.keys()) if (!names.includes(name)) names.push(name);
+
+    const frag = document.createDocumentFragment();
+    for (const name of names) {
+      const n = counts.get(name) ?? 0;
+      const b = button("", () => options.onSealPick(name));
+      b.className = "tb-button tb-seal";
+      const mark = document.createElement("span");
+      mark.className = "seal-atom";
+      mark.dataset["seal"] = name;
+      mark.style.setProperty("--seal-char", JSON.stringify(sealChar(name)));
+      b.appendChild(mark);
+      if (n > 0) b.appendChild(document.createTextNode(String(n)));
+      else b.setAttribute("data-empty", "");
+      b.title =
+        n === 0
+          ? `${sealChar(name)} ${name} — unused · a card's ◪, or shift+1..5 on a selected card`
+          : `${sealChar(name)} ${name} — ${count(n, "card")} · marks/seal-${name}.md`;
+      toggle(b, name === activeSeal);
+      frag.appendChild(b);
+    }
+    sealList.replaceChildren(frag);
+  }
+
+  function setActiveSeal(seal: string | null): void {
+    activeSeal = seal;
+    refreshSeals();
   }
 
   /**
@@ -412,6 +470,7 @@ export function createUi(options: UiOptions): Ui {
     setActiveThread,
     setArrange,
     setActiveGlyph,
+    setActiveSeal,
     setTier,
     refresh,
     destroy() {

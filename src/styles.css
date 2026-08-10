@@ -206,7 +206,8 @@ body {
 
 .card-unpin,
 .card-facet-btn,
-.card-outline-btn {
+.card-outline-btn,
+.card-seal-btn {
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1;
@@ -220,7 +221,8 @@ body {
 
 .card-unpin:hover,
 .card-facet-btn:hover,
-.card-outline-btn:hover { color: var(--ink); border-color: var(--ink); }
+.card-outline-btn:hover,
+.card-seal-btn:hover { color: var(--ink); border-color: var(--ink); }
 
 /* an outline you cannot fill is not offered: facets.ts writes data-headings
    only once the body has actually rendered some */
@@ -1167,14 +1169,14 @@ body {
    Cloth range only — reading surfaces are sacred, so the fiber and thread
    bands never age. Selection beats age: a grabbed or pinged card is being
    LOOKED AT, and the beam must not argue with the hand. */
-.card.tier-glyph[data-beam]:not([data-selected]):not([data-thread="in"]):not([data-glyphsel="in"]) .card-head {
+.card.tier-glyph[data-beam]:not([data-selected]):not([data-thread="in"]):not([data-glyphsel="in"]):not([data-sealsel="in"]) .card-head {
   border-color: var(--ghost);
   background: var(--paper);
 }
 .card.tier-glyph[data-beam] .card-title { color: var(--ghost); }
 .card.tier-glyph[data-beam] .card-glyphs { color: var(--s2); }
 
-.card.tier-glyph[data-beam="deep"]:not([data-selected]):not([data-thread="in"]):not([data-glyphsel="in"]) .card-head {
+.card.tier-glyph[data-beam="deep"]:not([data-selected]):not([data-thread="in"]):not([data-glyphsel="in"]):not([data-sealsel="in"]) .card-head {
   width: calc(10px / var(--z, 1));
   height: calc(10px / var(--z, 1));
 }
@@ -1304,3 +1306,152 @@ body {
 }
 
 .tb-tab-input:focus { border-bottom-color: currentColor; }
+
+/* --- §2 seals: the card-level glyph species (seals.ts) ---
+   A stamp marks a THOUGHT in text; a seal marks the whole CARD. Same atom
+   discipline as the glyph layer (the character rides in a custom property),
+   same inversion idioms at the same specificity — but the seal row lives on
+   the card HEAD, never in a body, and at cloth range it moves INSIDE the knot
+   square: the knot carries its seal, visually apart from the stamp
+   constellation floating above. Geometry and inversion only, as ever. */
+
+.seal-atom {
+  display: inline-block;
+  font-family: var(--mono);
+  line-height: 1;
+  color: currentColor;
+  user-select: none;
+}
+
+.seal-atom::before { content: var(--seal-char, "\25A0"); }
+
+/* the head row: one atom per seal, no counts (a card carries each glyph at
+   most once — the model's toggle — so a count could only ever say "1") */
+.card-seals {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 0.3rem;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+  cursor: pointer;
+}
+
+/* the ◪ inverts while its popover is open — the outline button's idiom */
+.card-seal-btn[data-open] { color: var(--paper); background: var(--ink); }
+
+/* SELECTION AS A UNIT — the glyph layer's selectors, shape for shape, at the
+   same specificity: carrying cards come forward, the cloth recedes, and the
+   atoms of other seals go quiet. Third species, one idiom. */
+.card[data-sealsel="in"] .card-head {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.card[data-sealsel="in"] .card-kind,
+.card[data-sealsel="in"] .card-unpin { color: var(--ghost); }
+.card[data-sealsel="in"] .glyph-count { color: var(--ghost); }
+
+.card[data-sealsel="out"] {
+  border-color: var(--ghost);
+  color: var(--s2);
+}
+
+.card[data-sealsel="out"] .card-head { border-bottom-color: var(--ghost); }
+.card[data-sealsel="out"] .card-title { color: var(--s2); }
+.card[data-sealsel="out"] .card-body,
+.card[data-sealsel="out"] .card-body a { color: var(--s2); }
+
+/* every receded state covers the other marks too (the wave-2 contrast rule) */
+.card[data-sealsel="out"] .fiber-mark { border-bottom-color: var(--s2); }
+.card[data-sealsel="out"] .glyph-mark { border-bottom-color: var(--ghost); }
+
+.seal-atom[data-sel="out"] { color: var(--ghost); }
+/* an unselected seal on a card that IS selected: dim, not bright-on-dark */
+.card[data-sealsel="in"] .card-seals .seal-atom[data-sel="out"] { color: var(--s2); }
+
+/* --- by tier: the row counter-scales with the title card, and at cloth range
+   the SAME DOM sits inside the knot square (seals.ts emits one drawing) --- */
+
+.card.tier-title .card-seals { font-size: min(46px, calc(11px / var(--z, 1))); }
+
+.card.tier-glyph .card-seals {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(1px / var(--z, 1));
+  font-size: calc(8px / var(--z, 1));
+  pointer-events: auto;
+}
+
+/* re-stated at glyph specificity, exactly as the sibling states do */
+.card.tier-glyph[data-sealsel="out"] .card-head { border-color: var(--ghost); }
+.card.tier-glyph[data-sealsel="in"] .card-head { background: var(--ink); }
+
+/* the beam dims a cold knot's seal with its caption and constellation */
+.card.tier-glyph[data-beam] .card-seals { color: var(--s2); }
+.card.tier-glyph[data-beam="deep"] .card-seals { color: var(--ghost); }
+
+/* --- the 5-chip popover: the fiber pill's chrome, opened by a click ---
+   hairline box in screen space, dead the moment the world moves under it */
+.seal-pop {
+  position: absolute;
+  display: flex;
+  align-items: stretch;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  user-select: none;
+  z-index: 6;
+}
+
+.seal-pop button {
+  min-width: 24px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 3px 6px;
+  text-align: center;
+  color: var(--ink);
+  background: var(--paper);
+  border: 0;
+  border-left: 1px solid var(--ghost);
+  cursor: pointer;
+}
+
+.seal-pop button:first-child { border-left: 0; }
+
+.seal-pop button:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* a seal the card already carries: inverted, and pressing it takes it off */
+.seal-pop button[data-active] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* --- the toolbar chips: the glyph group's readout, in cards not passages --- */
+.tb-seals {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.tb-seal {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tb-seal .seal-atom { font-size: 11px; }
+.tb-seal[data-empty] { color: var(--ghost); border-color: var(--ghost); }
+.tb-seal[data-empty]:hover { color: var(--ink); border-color: var(--ink); }

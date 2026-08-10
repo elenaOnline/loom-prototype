@@ -62,6 +62,12 @@ export function createHoverLens(options: HoverLensOptions): HoverLens {
       edges.add(e.id);
       claim(e.from === root ? e.to : e.from);
     }
+    // SEAL-MATES (wave-4 §2): every card sharing a seal with this one joins
+    // the neighbourhood, with NO edge to light — there is none, and that is
+    // the point of a seal: the shared mark is the whole of the connection.
+    for (const s of board.sealsOf(root)) {
+      for (const mate of board.cardsOfSeal(s.glyph)) claim(mate);
+    }
     return { cards, edges };
   }
 

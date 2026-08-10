@@ -1,6 +1,6 @@
 // cards.ts — model → DOM. Real elements, real text (fibers will need selection).
 //
-// A card is: a title bar (serif title + mono kind/path line + up to three
+// A card is: a title bar (serif title + mono kind/path line + up to four
 // controls) and a body of sanitized provider HTML. The title bar is the drag
 // handle, so dragging never fights text selection in the body. Alt-drag anywhere
 // on a card pulls a manual edge to another card, and a corner grip resizes it
@@ -11,9 +11,10 @@
 // card can have SEVERAL placements, so unpinning one facet leaves the others,
 // their marks and their edges exactly where they were (`model.removeNode`).
 //
-// The two other head controls (`≡` outline, `⊞` split a facet) are BUILT here
-// because they are card chrome, and HANDLED in facets.ts by delegation — this
-// module knows what a card looks like, not what an outline is.
+// The other head controls (`≡` outline, `⊞` split a facet, `◪` seal) are BUILT
+// here because they are card chrome, and HANDLED elsewhere by delegation
+// (facets.ts, seals.ts) — this module knows what a card looks like, not what
+// an outline or a seal is.
 //
 // One card kind is written rather than fetched: a `note` body is contenteditable
 // and types straight through to the model, so a note fibers.ts just created can
@@ -131,6 +132,16 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     facet.title = "s — split a facet: a second window on this same card";
     facet.textContent = "⊞";
     controls.appendChild(facet);
+
+    // built here, handled in seals.ts by delegation — the same split the
+    // outline and facet buttons already live by: this module knows what a card
+    // looks like, not what a seal is
+    const seal = document.createElement("button");
+    seal.className = "card-seal-btn";
+    seal.type = "button";
+    seal.title = "seal ▸ — mark this card";
+    seal.textContent = "◪";
+    controls.appendChild(seal);
 
     const close = document.createElement("button");
     close.className = "card-unpin";
@@ -279,7 +290,7 @@ export function createCardLayer(options: CardLayerOptions): CardLayer {
     // the head controls are buttons, not drag handles: let the click through
     if (
       e.target instanceof Element &&
-      e.target.closest(".card-unpin, .card-facet-btn, .card-outline-btn, .card-outline")
+      e.target.closest(".card-unpin, .card-facet-btn, .card-outline-btn, .card-seal-btn, .card-outline")
     ) {
       return;
     }
