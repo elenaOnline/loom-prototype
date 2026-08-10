@@ -1217,3 +1217,90 @@ body {
    being asked about, and an answer needs names (the Litmaps behaviour) */
 .card.tier-glyph[data-mute][data-hover="in"] .card-head-stack { display: block; }
 #cards.hover-lens .card.tier-glyph[data-beam="deep"][data-hover="in"] .card-head-stack { display: block; }
+
+/* =========================================================== wave 4 ======= */
+
+/* --- §1 tabs-as-bookmarks: a second full-width hairline row of the toolbar
+   instrument (tabs.ts). flex-basis:100% lets the toolbar's existing wrap put
+   it under the groups, and the viewport insets read offsetHeight, so the row
+   costs nothing downstream. A tab inverts ONLY while the camera is actually at
+   its place (tabs.ts AT_TOL_*) — no "last clicked" state exists to style.
+   Hairlines and inversion only: nothing rounded, no shadow, no transition. */
+
+.tb-tabs {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-top: 0.2rem;
+  border-top: 1px solid var(--ghost);
+  min-width: 0;
+  /* one row: like .tb-threads, the strip clips before it grows a third line */
+  overflow: hidden;
+}
+
+/* a bookmark tab: one hairline box holding the fly button and its × — nested
+   controls, so the box cannot itself be a <button>. It wears the .tb-button
+   states (hover ink, data-active inversion) so the strip reads as one chrome. */
+.tb-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--ghost);
+}
+
+.tb-tab:hover { border-color: var(--ink); }
+
+.tb-tab[data-active] {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+/* currentColor throughout, so both halves survive the inversion */
+.tb-tab-go {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.3;
+  padding: 2px 4px 2px 6px;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: currentColor;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* the close: small, ALWAYS visible (a control that appears on hover is chrome
+   hiding what exists), split off by its own hairline */
+.tb-tab-x {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.3;
+  padding: 2px 5px 2px 4px;
+  border: 0;
+  border-left: 1px solid var(--ghost);
+  color: currentColor;
+  background: none;
+  cursor: pointer;
+}
+
+/* the inline rename: the thread nameplate's input idiom, sat inside the tab */
+.tb-tab-input {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.3;
+  width: 9rem;
+  margin: 2px 6px;
+  color: currentColor;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--ghost);
+  outline: none;
+}
+
+.tb-tab-input:focus { border-bottom-color: currentColor; }

@@ -21,6 +21,7 @@ import { createWeave } from "./weave";
 import { createBeam } from "./beam";
 import { createHoverLens } from "./hover";
 import { createUi } from "./ui";
+import { createTabStrip } from "./tabs";
 import { createWikiSource } from "./providers/wiki";
 import { createFolderSource, type FolderSource } from "./providers/folder";
 import type { ContentSource } from "./providers/source";
@@ -178,6 +179,29 @@ const ui = createUi({
   onGlyphFile: () => glyphs.placeFile(),
   onCaptions: (on) => tiers.setCaptions(on),
   onBeam: (days) => beam.setOffsetDays(days),
+});
+
+// the tab strip (wave-4 §1): a second toolbar row, and it MUST be built after
+// createUi — the ui replaceChildren()s the toolbar, so a row appended earlier
+// would be swept away with the previous chrome. The insets read offsetHeight,
+// so the extra row is absorbed by the camera's usable area for free.
+createTabStrip({
+  toolbar,
+  viewport,
+  board,
+  camera,
+  getInsets: insets,
+  getContentBounds: contentBounds,
+  getSelectedCardId: () => cards.selected(),
+  getSelectedCardTitle: () => {
+    const id = cards.selected();
+    return id ? (board.node(id)?.title ?? null) : null;
+  },
+  getActiveThreadName: () => {
+    const id = threads.selection()?.threadId ?? null;
+    return id ? (board.thread(id)?.name ?? null) : null;
+  },
+  onStatus: (text) => ui.status(text),
 });
 
 // after ui: the tier layer reports its altitude the moment it is built, and it
