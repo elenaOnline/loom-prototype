@@ -571,7 +571,11 @@ export function createFiberLayer(options: FiberLayerOptions): FiberLayer {
       change.kind === "view" ||
       // a glyph stamp never removes a fiber span (glyphs.ts unwraps only its
       // own class), so re-wrapping every body on a stamp would be pure churn
-      change.kind === "glyphs"
+      change.kind === "glyphs" ||
+      // and the wave-4 kinds touch no body at all: a seal sits on the card
+      // head, a bookmark sits in the toolbar
+      change.kind === "seals" ||
+      change.kind === "bookmarks"
     ) {
       return;
     }

@@ -337,6 +337,92 @@ export interface GlyphSpec {
   id?: string;
 }
 
+/**
+ * A SEAL: the card-level glyph species (wave-4 §2). The passage stamps mark
+ * THOUGHTS in text; a seal marks a whole CARD, so disparate cards stay
+ * connected by a shared mark WITHOUT an edge. A new species with its own name —
+ * one-concept-one-name forbids overloading "stamp" — and its own palette:
+ * circles and diamonds are taken, so seals are rectilinear/angular. It binds to
+ * the CARD (contentRoot; facets share), and it is an unordered MEMBERSHIP, not
+ * a location: it carries no quote, and at most one of each glyph sits on a card.
+ */
+export interface Seal {
+  id: string;
+  /** palette name, or a foreign one the file carried — never coerced */
+  glyph: string;
+  nodeId: string;
+  /** the §0 substrate: a seal is `how: "mark"`, from the card it is on */
+  prov: Prov;
+  foreign?: Record<string, unknown>;
+}
+
+export interface SealSpec {
+  glyph: string;
+  nodeId: string;
+  prov?: ProvSeed;
+  foreign?: Record<string, unknown>;
+  /** only for load(): keep the id from the file */
+  id?: string;
+}
+
+/**
+ * Exactly five, the same cap as the stamp palette, and the same pair shape —
+ * but a different species and a disjoint geometry, so the two can never be
+ * mistaken for one another at any altitude.
+ */
+export const SEAL_PALETTE: readonly Glyph[] = [
+  { name: "block", char: "■" },
+  { name: "frame", char: "□" },
+  { name: "peak", char: "▲" },
+  { name: "ridge", char: "△" },
+  { name: "cell", char: "⬡" },
+];
+
+export function isPaletteSeal(name: string): boolean {
+  return SEAL_PALETTE.some((g) => g.name === name);
+}
+
+/** the drawn form of a seal name — a foreign one draws as its initial (see `glyphChar`) */
+export function sealChar(name: string): string {
+  const found = SEAL_PALETTE.find((g) => g.name === name);
+  if (found) return found.char;
+  return name.slice(0, 1).toUpperCase() || "?";
+}
+
+/**
+ * A BOOKMARK: a pinned location in the cloth (wave-4 §1, ideation §6.5's
+ * settlement — the loom is the home screen; tabs are bookmarks INTO it, never
+ * documents). What is kept is a WORLD-space center + zoom, deliberately NOT the
+ * raw screen-offset CameraState: an offset is viewport-size dependent, so the
+ * same file opened in a narrower window would bookmark somewhere else. A
+ * bookmark names no node and holds no membership — deleting cards never touches
+ * one; it can outlive everything it was framing.
+ */
+export interface Bookmark {
+  id: string;
+  name: string;
+  /** WORLD-space x of the view's center */
+  cx: number;
+  /** WORLD-space y of the view's center */
+  cy: number;
+  /** zoom */
+  z: number;
+  /** the §0 substrate: a bookmark is `how: "place"` */
+  prov: Prov;
+  foreign?: Record<string, unknown>;
+}
+
+export interface BookmarkSpec {
+  name: string;
+  cx: number;
+  cy: number;
+  z: number;
+  prov?: ProvSeed;
+  foreign?: Record<string, unknown>;
+  /** only for load(): keep the id from the file */
+  id?: string;
+}
+
 /** the entropy verbs, in the ideation's truthfulness order (§7.5 rungs a–b) */
 export type ArrangeVerb = "pull" | "comb" | "relax";
 
@@ -390,6 +476,10 @@ export interface BoardSnapshot {
   threads: Thread[];
   marks: Mark[];
   glyphs: GlyphStamp[];
+  /** the card-level glyph species (wave-4 §2) */
+  seals: Seal[];
+  /** pinned places in the cloth (wave-4 §1) */
+  bookmarks: Bookmark[];
   /** the persistent pull/comb/relax undo stash, keyed by scope */
   arrangements: Arrangement[];
   topologyMode: TopologyMode;
@@ -403,7 +493,10 @@ export interface BoardSnapshot {
  * What changed. `graph` = nodes/edges added or removed · `position` = a node
  * moved or resized · `content` = title/body/status · `meta` = modes ·
  * `threads` = the named-thread list · `marks` = the fibers on a card ·
- * `glyphs` = the meaning-mark stamps · `arrange` = a restore point was taken or
+ * `glyphs` = the meaning-mark stamps · `seals` = the card-level marks (wave-4
+ * §2; `nodeIds` names the sealed card's placements, like `glyphs`) ·
+ * `bookmarks` = the pinned-places list (wave-4 §1; no node is involved, so no
+ * `nodeIds`) · `arrange` = a restore point was taken or
  * spent (no card moved — the moves themselves arrive as `position`) ·
  * `view` = one PLACEMENT's own scroll anchor moved (wave-2 §4; nothing about
  * the card itself changed, so every decorating layer ignores it) ·
@@ -417,6 +510,8 @@ export type ChangeKind =
   | "threads"
   | "marks"
   | "glyphs"
+  | "seals"
+  | "bookmarks"
   | "arrange"
   | "view"
   | "reset";
@@ -480,6 +575,10 @@ export interface Board {
   marks(): Mark[];
   /** every meaning-mark stamp on the board, in stamp order */
   glyphs(): GlyphStamp[];
+  /** every card-level seal on the board, in stamp order */
+  seals(): Seal[];
+  /** every pinned place, in capture order */
+  bookmarks(): Bookmark[];
   node(id: string): LoomNode | undefined;
   edge(id: string): LoomEdge | undefined;
   thread(id: string): Thread | undefined;
@@ -489,6 +588,10 @@ export interface Board {
   glyphsOf(nodeId: string): GlyphStamp[];
   /** one glyph's whole collection — the thing `marks/<glyph>.md` is written from */
   stampsOf(glyph: string): GlyphStamp[];
+  /** every seal on one card (by contentRoot — facets share), in stamp order */
+  sealsOf(nodeId: string): Seal[];
+  /** the distinct cards carrying one seal, in stamp order — the seal's membership */
+  cardsOfSeal(glyph: string): string[];
   /**
    * The CARD behind a placement (wave-2 §4). A facet's root, or the id itself.
    * Everything that binds to the card rather than to the placement — marks,
@@ -536,6 +639,20 @@ export interface Board {
   /** stamp a glyph on a passage — at highlight speed, no dialog, no naming */
   addGlyph(spec: GlyphSpec): GlyphStamp;
   removeGlyph(id: string): void;
+
+  /**
+   * Seal a card — or UNSEAL it: a card already carrying this glyph has the seal
+   * removed instead, and null comes back. The toggle lives in the model so every
+   * gesture path (keys, popover, an agent's file) shares one rule and a card can
+   * never carry the same glyph twice.
+   */
+  addSeal(spec: SealSpec): Seal | null;
+  removeSeal(id: string): void;
+
+  /** pin the current view — a place in the cloth, never a document */
+  addBookmark(spec: BookmarkSpec): Bookmark;
+  renameBookmark(id: string, name: string): void;
+  removeBookmark(id: string): void;
 
   /** name a run of nodes — the moment a trail becomes an object you can keep */
   addThread(name: string, nodeIds: string[], prov?: ProvSeed, opts?: ThreadOpts): Thread;
@@ -825,6 +942,8 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
   let threads: Thread[] = [];
   let marks: Mark[] = [];
   let stamps: GlyphStamp[] = [];
+  let seals: Seal[] = [];
+  let bookmarks: Bookmark[] = [];
   let arrangements: Arrangement[] = [];
   let topology: TopologyMode = "returnedge";
   let content: ContentMode = "wiki";
@@ -950,6 +1069,23 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
     return out;
   }
 
+  /** a seal takes the stamp's backfill shape — it is the same `mark` verb */
+  function adoptSeal(s: Seal): Seal {
+    const out: Seal = { ...s };
+    out.prov = s.prov ? cloneProv(s.prov) : backfillProv({ by: "human", how: "mark", from: s.nodeId });
+    if (s.foreign) out.foreign = { ...s.foreign };
+    else delete out.foreign;
+    return out;
+  }
+
+  function adoptBookmark(b: Bookmark): Bookmark {
+    const out: Bookmark = { ...b };
+    out.prov = b.prov ? cloneProv(b.prov) : backfillProv({ by: "human", how: "place" });
+    if (b.foreign) out.foreign = { ...b.foreign };
+    else delete out.foreign;
+    return out;
+  }
+
   function adoptThread(t: Thread): Thread {
     const out: Thread = { ...t, nodeIds: t.nodeIds.slice() };
     // the brief's backfill shape is uniform: human · wander · at-unknown, even
@@ -986,6 +1122,16 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       return stamps.filter((g) => g.nodeId === root);
     },
     stampsOf: (glyph) => stamps.filter((g) => g.glyph === glyph),
+    seals: () => seals.slice(),
+    bookmarks: () => bookmarks.slice(),
+    sealsOf: (nodeId) => {
+      const root = rootId(nodeId);
+      return seals.filter((s) => s.nodeId === root);
+    },
+    // distinct by construction — addSeal's toggle never lets a card carry the
+    // same glyph twice — but dedupe anyway: an invariant a file could break is
+    // not an invariant, it is a hope
+    cardsOfSeal: (glyph) => dedupe(seals.filter((s) => s.glyph === glyph).map((s) => s.nodeId)),
 
     contentRoot: rootId,
     placementsOf: (nodeId) => placements(nodeId),
@@ -1057,6 +1203,16 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
           return next;
         });
         stamps = stamps.map((g) => (g.nodeId === id ? { ...g, nodeId: heir } : g));
+        // seals re-point exactly like stamps — the card is still here — with
+        // one extra care stamps do not need: at most one of each glyph per
+        // card, so a glyph the heir somehow already carries keeps its own copy
+        // and the dead placement's twin is dropped, never doubled
+        const heirGlyphs = new Set(
+          seals.filter((s) => s.nodeId === heir).map((s) => s.glyph),
+        );
+        seals = seals
+          .filter((s) => !(s.nodeId === id && heirGlyphs.has(s.glyph)))
+          .map((s) => (s.nodeId === id ? { ...s, nodeId: heir } : s));
         // a thread holds CARDS, and the card is still here: re-point, never break
         threads = threads.map((t) =>
           t.nodeIds.includes(id)
@@ -1099,6 +1255,10 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       // collection meaning exactly what it meant, so the stamp just goes and the
       // glyph file regenerates one entry shorter. No break record to keep.
       stamps = stamps.filter((g) => g.nodeId !== id);
+      // a seal is an unordered membership, and this member has left: the rest
+      // of the group means exactly what it meant. Bookmarks are places, not
+      // cards — node removal never touches one.
+      seals = seals.filter((s) => s.nodeId !== id);
       // a restore point loses the card too — "put back" can only put back what
       // is still on the board. An entry left with nothing to restore is dropped
       // rather than kept as an offer that would do nothing.
@@ -1292,6 +1452,73 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       emit({ kind: "glyphs", nodeIds: placementIds(gone.nodeId) });
     },
 
+    addSeal(spec) {
+      // a seal binds to the CARD; which window you sealed it in is not part of
+      // what it means
+      const root = rootId(spec.nodeId);
+      // THE TOGGLE. At most one of each glyph per card, so re-applying is the
+      // one gesture left to mean anything: it unseals. Living here rather than
+      // in any gesture layer, the rule holds for keys, popover and file alike.
+      const held = seals.find((s) => s.nodeId === root && s.glyph === spec.glyph);
+      if (held) {
+        seals = seals.filter((s) => s.id !== held.id);
+        emit({ kind: "seals", nodeIds: placementIds(root) });
+        return null;
+      }
+      const seal: Seal = {
+        id: spec.id ?? freshId("s"),
+        glyph: spec.glyph,
+        nodeId: root,
+        // a seal is the brief's `mark` verb, and it came from the card it is on
+        prov: makeProv({ how: "mark", from: spec.nodeId, src: null, ...(spec.prov ?? {}) }),
+        ...(spec.foreign === undefined ? {} : { foreign: { ...spec.foreign } }),
+      };
+      seals = [...seals, seal];
+      emit({ kind: "seals", nodeIds: placementIds(seal.nodeId) });
+      return seal;
+    },
+
+    removeSeal(id) {
+      const gone = seals.find((s) => s.id === id);
+      if (!gone) return;
+      seals = seals.filter((s) => s.id !== id);
+      emit({ kind: "seals", nodeIds: placementIds(gone.nodeId) });
+    },
+
+    addBookmark(spec) {
+      const bookmark: Bookmark = {
+        id: spec.id ?? freshId("b"),
+        name: spec.name,
+        cx: spec.cx,
+        cy: spec.cy,
+        z: spec.z,
+        // a bookmark is a view PLACED; `from` = the card it was named after, if
+        // the capture site said so
+        prov: makeProv({ how: "place", ...(spec.prov ?? {}) }),
+        ...(spec.foreign === undefined ? {} : { foreign: { ...spec.foreign } }),
+      };
+      bookmarks = [...bookmarks, bookmark];
+      emit({ kind: "bookmarks" });
+      return bookmark;
+    },
+
+    renameBookmark(id, name) {
+      let hit = false;
+      bookmarks = bookmarks.map((b) => {
+        if (b.id !== id || b.name === name) return b;
+        hit = true;
+        return { ...b, name };
+      });
+      if (hit) emit({ kind: "bookmarks" });
+    },
+
+    removeBookmark(id) {
+      const next = bookmarks.filter((b) => b.id !== id);
+      if (next.length === bookmarks.length) return;
+      bookmarks = next;
+      emit({ kind: "bookmarks" });
+    },
+
     addThread(name, nodeIds, prov, opts) {
       // a thread is a line of CARDS; two facets of one article are one step
       const kept = dedupe(nodeIds.filter((id) => nodes.has(id)).map(rootId));
@@ -1450,6 +1677,8 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
         threads: threads.map(adoptThread),
         marks: marks.map((m) => ({ ...m, ...(m.foreign ? { foreign: { ...m.foreign } } : {}) })),
         glyphs: stamps.map(adoptGlyph),
+        seals: seals.map(adoptSeal),
+        bookmarks: bookmarks.map(adoptBookmark),
         arrangements: arrangements.map(adoptArrangement),
         topologyMode: topology,
         contentMode: content,
@@ -1528,6 +1757,22 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       stamps = (snapshot.glyphs ?? [])
         .map(adoptGlyph)
         .map((g) => ({ ...g, nodeId: rootId(g.nodeId) }));
+      // seals are KEPT when their card is absent, exactly like stamps — they
+      // draw nothing until the card returns — but the one-of-each-glyph rule
+      // binds the load path too: root-mapping can fold a facet's seal onto its
+      // card's, and a hand edit can say anything, so the first of a pair wins
+      const sealSeen = new Set<string>();
+      seals = (snapshot.seals ?? [])
+        .map(adoptSeal)
+        .map((s) => ({ ...s, nodeId: rootId(s.nodeId) }))
+        .filter((s) => {
+          const key = `${s.nodeId} ${s.glyph}`;
+          if (sealSeen.has(key)) return false;
+          sealSeen.add(key);
+          return true;
+        });
+      // a bookmark names no node: always kept, nothing to prune it against
+      bookmarks = (snapshot.bookmarks ?? []).map(adoptBookmark);
       // a restore point can only restore cards that are still here. Dead spots
       // are dropped the same way an edge with a missing endpoint is, and an
       // entry left with nothing to put back goes with them — otherwise the
@@ -1552,6 +1797,8 @@ export function createBoard(initial?: Partial<BoardSnapshot>): Board {
       threads = [];
       marks = [];
       stamps = [];
+      seals = [];
+      bookmarks = [];
       arrangements = [];
       // a cleared board is a new board — it inherits nobody's foreign fields
       boardForeign = undefined;

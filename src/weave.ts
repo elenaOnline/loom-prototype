@@ -61,6 +61,8 @@ interface MergeReport {
   threads: string[];
   marks: number;
   glyphs: number;
+  seals: number;
+  bookmarks: number;
   /** objects the file changed/dropped that the merge refused to touch */
   ignored: number;
   /** how many of the arriving nodes were agent-authored */
@@ -110,6 +112,8 @@ export function createWeave(options: WeaveOptions): Weave {
       threads: [],
       marks: 0,
       glyphs: 0,
+      seals: 0,
+      bookmarks: 0,
       ignored: 0,
       byAgent: 0,
     };
@@ -209,6 +213,42 @@ export function createWeave(options: WeaveOptions): Weave {
       report.glyphs += 1;
     }
 
+    // Seals by id, append-only — with one guard the other collections do not
+    // need: `addSeal` is a TOGGLE (the model's one-of-each-glyph rule), so an
+    // arriving entry that duplicates a glyph this board already holds on that
+    // card is SKIPPED, not applied — applying it would REMOVE the seal, which
+    // is exactly the kind of edit an append-only merge exists to refuse.
+    const sealIds = new Set(board.seals().map((s) => s.id));
+    for (const s of snapshot.seals ?? []) {
+      if (sealIds.has(s.id)) continue;
+      if (board.sealsOf(s.nodeId).some((held) => held.glyph === s.glyph)) continue;
+      const added = board.addSeal({
+        id: s.id,
+        glyph: s.glyph,
+        nodeId: s.nodeId,
+        prov: s.prov,
+        ...(s.foreign === undefined ? {} : { foreign: s.foreign }),
+      });
+      if (added) report.seals += 1;
+    }
+
+    // Bookmarks by id, append-only. A place names no node, so there is nothing
+    // to validate it against — it simply joins the strip.
+    const bookmarkIds = new Set(board.bookmarks().map((b) => b.id));
+    for (const b of snapshot.bookmarks ?? []) {
+      if (bookmarkIds.has(b.id)) continue;
+      board.addBookmark({
+        id: b.id,
+        name: b.name,
+        cx: b.cx,
+        cy: b.cy,
+        z: b.z,
+        prov: b.prov,
+        ...(b.foreign === undefined ? {} : { foreign: b.foreign }),
+      });
+      report.bookmarks += 1;
+    }
+
     // The append-only audit: anything of ours the file no longer carries is a
     // removal the convention forbids. Counted, said once, never applied.
     const fileNodes = new Set((snapshot.nodes ?? []).map((n) => n.id));
@@ -229,7 +269,8 @@ export function createWeave(options: WeaveOptions): Weave {
       return 0;
     }
     const r = merge(snapshot);
-    const total = r.nodes + r.edges + r.threads.length + r.marks + r.glyphs;
+    const total =
+      r.nodes + r.edges + r.threads.length + r.marks + r.glyphs + r.seals + r.bookmarks;
     if (total === 0) {
       if (r.ignored > 0) status("the file changed, but nothing new arrived (edits/removals are ignored)");
       return 0;
@@ -240,7 +281,9 @@ export function createWeave(options: WeaveOptions): Weave {
       r.edges > 0 ? `${r.edges} edge${r.edges === 1 ? "" : "s"}` : "",
       ...r.threads.map((name) => `thread "${name}"`),
       r.glyphs > 0 ? `${r.glyphs} stamp${r.glyphs === 1 ? "" : "s"}` : "",
+      r.seals > 0 ? `${r.seals} seal${r.seals === 1 ? "" : "s"}` : "",
       r.marks > 0 ? `${r.marks} mark${r.marks === 1 ? "" : "s"}` : "",
+      r.bookmarks > 0 ? `${r.bookmarks} bookmark${r.bookmarks === 1 ? "" : "s"}` : "",
     ].filter(Boolean);
     status(`${who} ${bits.join(" · ")}`);
     return total;

@@ -231,6 +231,10 @@ export function createEdgeLayer(svg: SVGSVGElement, board: Board): EdgeLayer {
       change.kind === "meta" ||
       change.kind === "threads" ||
       change.kind === "marks" ||
+      // a seal connects cards WITHOUT an edge (wave-4 §2), and a bookmark is a
+      // place — neither moves a line
+      change.kind === "seals" ||
+      change.kind === "bookmarks" ||
       // a restore point being taken or spent moves no card; the moves it causes
       // arrive separately as `position`
       change.kind === "arrange" ||

@@ -526,6 +526,11 @@ export function createGlyphLayer(options: GlyphLayerOptions): GlyphLayer {
       change.kind === "meta" ||
       change.kind === "threads" ||
       change.kind === "arrange" ||
+      // the card-level species and the pinned places (wave-4) never move a
+      // passage stamp — reacting would churn every body AND regenerate the
+      // glyph files for nothing
+      change.kind === "seals" ||
+      change.kind === "bookmarks" ||
       // a placement scrolled to a heading; the stamps in it are untouched
       change.kind === "view"
     ) {

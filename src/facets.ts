@@ -485,6 +485,10 @@ export function createFacetLayer(options: FacetLayerOptions): FacetLayer {
       change.kind === "threads" ||
       change.kind === "marks" ||
       change.kind === "glyphs" ||
+      // sealing a card changes nothing about its placements, and a bookmark
+      // involves no card — re-parking the whole cloth for either is pure churn
+      change.kind === "seals" ||
+      change.kind === "bookmarks" ||
       change.kind === "arrange"
     ) {
       return;

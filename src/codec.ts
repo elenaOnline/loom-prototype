@@ -12,6 +12,7 @@ import type {
   Arrangement,
   Board,
   BoardSnapshot,
+  Bookmark,
   BrokenLink,
   ContentMode,
   EdgeKind,
@@ -24,6 +25,7 @@ import type {
   Prov,
   ProvBy,
   ProvHow,
+  Seal,
   Thread,
   ThreadBreak,
   TopologyMode,
@@ -83,6 +85,8 @@ const EDGE_EXT_KEYS = new Set(["kind", "prov"]);
 const THREAD_KEYS = new Set(["id", "name", "nodeIds", "pinned", "broken", "prov"]);
 const MARK_KEYS = new Set(["id", "nodeId", "quote", "kind", "noteNodeId"]);
 const GLYPH_KEYS = new Set(["id", "glyph", "nodeId", "quote", "prov"]);
+const SEAL_KEYS = new Set(["id", "glyph", "nodeId", "prov"]);
+const BOOKMARK_KEYS = new Set(["id", "name", "cx", "cy", "z", "prov"]);
 const ARRANGE_KEYS = new Set(["key", "verb", "at", "spots"]);
 const BOARD_BASE_KEYS = new Set(["nodes", "edges", "x-powerset"]);
 const BOARD_EXT_KEYS = new Set([
@@ -93,6 +97,8 @@ const BOARD_EXT_KEYS = new Set([
   "threads",
   "marks",
   "glyphs",
+  "seals",
+  "bookmarks",
   "arrangements",
 ]);
 
@@ -233,6 +239,35 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
     return out;
   });
 
+  // The seal collection (wave-4 §2): the glyph shape minus the quote, because a
+  // seal is a membership, not a location — it names a card, never a passage.
+  const seals: Json[] = snapshot.seals.map((s) => {
+    const out: Json = {
+      id: s.id,
+      glyph: s.glyph,
+      nodeId: s.nodeId,
+      prov: provOut(s.prov),
+    };
+    replay(out, s.foreign);
+    return out;
+  });
+
+  // The pinned places (wave-4 §1). WORLD-space center + zoom, deliberately not
+  // a CameraState: a screen offset is viewport-size dependent, and the file has
+  // to mean the same place in every window that ever opens it.
+  const bookmarks: Json[] = snapshot.bookmarks.map((b) => {
+    const out: Json = {
+      id: b.id,
+      name: b.name,
+      cx: b.cx,
+      cy: b.cy,
+      z: b.z,
+      prov: provOut(b.prov),
+    };
+    replay(out, b.foreign);
+    return out;
+  });
+
   // The un-arrange stash, made persistent (wave-2 §3). Wave 1 kept it in a
   // module-local Map: reload mid-pull and the arc was permanent. It is written
   // as plain coordinates so a hand-edit or another reader can see exactly what
@@ -259,6 +294,10 @@ export function toCanvas(snapshot: BoardSnapshot): Json {
     // that never used the palette keep their exact shape (fixpoint preserved:
     // absent reads back as [], which writes back as absent)
     ...(glyphs.length === 0 ? {} : { glyphs }),
+    // same discipline for both wave-4 collections: an unsealed, unbookmarked
+    // board keeps the exact shape every earlier wave wrote (fixpoint preserved)
+    ...(seals.length === 0 ? {} : { seals }),
+    ...(bookmarks.length === 0 ? {} : { bookmarks }),
     // same discipline: a board nobody has arranged carries no key at all
     ...(arrangements.length === 0 ? {} : { arrangements }),
   };
@@ -335,6 +374,8 @@ export function fromCanvas(raw: unknown): Partial<BoardSnapshot> | null {
     threads: readThreads(ext["threads"]),
     marks: readMarks(ext["marks"]),
     glyphs: readGlyphs(ext["glyphs"]),
+    seals: readSeals(ext["seals"]),
+    bookmarks: readBookmarks(ext["bookmarks"]),
     arrangements: readArrangements(ext["arrangements"]),
     topologyMode: readTopology(ext["topologyMode"]),
     contentMode: readContent(ext["contentMode"]),
@@ -529,6 +570,66 @@ function readGlyphs(raw: unknown): GlyphStamp[] {
     const foreign = pickForeign(item, GLYPH_KEYS);
     if (foreign) stamp.foreign = foreign;
     out.push(stamp);
+  }
+  return out;
+}
+
+/**
+ * The seal collection, liberal on read, with `readGlyphs`'s two liberties
+ * inherited whole: a foreign seal NAME is never coerced into the palette (it
+ * draws as its initial), and a seal whose card is not on the board is KEPT — it
+ * draws nothing until that card comes back. An entry missing id, glyph or
+ * nodeId is dropped; its unknown keys ride through as foreign.
+ */
+function readSeals(raw: unknown): Seal[] {
+  const out: Seal[] = [];
+  for (const item of asArray(raw)) {
+    if (!isObject(item)) continue;
+    const id = str(item["id"]);
+    const glyph = str(item["glyph"]);
+    const nodeId = str(item["nodeId"]);
+    if (!id || !glyph || !nodeId) continue;
+    const seal: Seal = {
+      id,
+      glyph,
+      nodeId,
+      prov: readProv(item["prov"], { from: nodeId, how: "mark" }),
+    };
+    const foreign = pickForeign(item, SEAL_KEYS);
+    if (foreign) seal.foreign = foreign;
+    out.push(seal);
+  }
+  return out;
+}
+
+/**
+ * The pinned places, liberal on read. An entry missing its id, its name or any
+ * of the three coordinates is dropped — a bookmark that cannot say where it
+ * points cannot be flown to, so keeping it would put a dead control in the
+ * strip. `z` must also be positive: a zero-or-negative zoom is not a place a
+ * camera can be. Unknown keys ride through as foreign.
+ */
+function readBookmarks(raw: unknown): Bookmark[] {
+  const out: Bookmark[] = [];
+  for (const item of asArray(raw)) {
+    if (!isObject(item)) continue;
+    const id = str(item["id"]);
+    const name = str(item["name"]);
+    const cx = num(item["cx"]);
+    const cy = num(item["cy"]);
+    const z = num(item["z"]);
+    if (!id || !name || cx === undefined || cy === undefined || z === undefined || z <= 0) continue;
+    const bookmark: Bookmark = {
+      id,
+      name,
+      cx,
+      cy,
+      z,
+      prov: readProv(item["prov"], { how: "place" }),
+    };
+    const foreign = pickForeign(item, BOOKMARK_KEYS);
+    if (foreign) bookmark.foreign = foreign;
+    out.push(bookmark);
   }
   return out;
 }
